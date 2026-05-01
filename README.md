@@ -70,7 +70,7 @@ This must live at `../claude-usage` relative to this repo (e.g. `C:\Git-Reposito
 
    If it fails with a permissions error, right-click → Run as administrator. If the junction targets already exist as real directories, the script removes them first — move any files into the repo before running.
 
-7. **Start the app**
+6. **Start the app**
 
    ```
    npm start
@@ -78,7 +78,7 @@ This must live at `../claude-usage` relative to this repo (e.g. `C:\Git-Reposito
 
    Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-8. **One-click launcher** *(optional)*
+7. **One-click launcher** *(optional)*
 
    Double-click `Launch Command Center.bat` — it resolves the correct Node version from `.nvmrc` via NVM, starts the server, and opens your default browser automatically. Requires NVM for Windows.
 
