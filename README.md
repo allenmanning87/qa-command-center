@@ -60,23 +60,7 @@ This must live at `../claude-usage` relative to this repo (e.g. `C:\Git-Reposito
 
    Open `.env` and fill in your JIRA credentials and release pipeline config. See `.env.example` for all available variables and their descriptions.
 
-5. **Initialize data files**
-
-   ```
-   copy data\milestones.example.json data\milestones.json
-   copy data\ai-skills.example.json data\ai-skills.json
-   copy data\test-suite.example.json data\test-suite.json
-   copy data\jql-queries.example.json data\jql-queries.json
-   copy data\strategy.example.json data\strategy.json
-   copy data\jira-settings.example.json data\jira-settings.json
-   copy data\time-config.example.json data\time-config.json
-   copy data\time-entries.example.json data\time-entries.json
-   copy data\runtime.example.json data\runtime.json
-   ```
-
-   The app populates these files as you use it. The stubs are empty — no real data included.
-
-6. **Configure Claude Code integration** *(optional)*
+5. **Configure Claude Code integration** *(optional)*
 
    Run `setup.bat` as Administrator to create symlinks so Claude Code picks up the skills and commands from this repo:
 
@@ -108,7 +92,9 @@ This must live at `../claude-usage` relative to this repo (e.g. `C:\Git-Reposito
 | `public/` | Frontend SPA (vanilla JS, no framework) |
 | `public/js/views/` | One JS file per section/view |
 | `public/css/main.css` | Full design system with CSS custom properties |
-| `data/` | Local JSON persistence (gitignored; backed by SQLite) |
+| `data/` | SQLite database (`app.db`, gitignored — created automatically on first startup) |
+| `data/*.example.json` | Schema reference for each data collection (not loaded by the server) |
+| `scripts/migrate-json-to-db.js` | One-time migration tool (legacy — not needed for fresh installs) |
 | `tests/` | E2E test files (TestCafe) |
 | `.claude/commands/` | Claude Code slash commands — release pipeline, go-live testing, XML generation |
 | `.claude/skills/` | Claude Code skills — build, design, review, deploy |
