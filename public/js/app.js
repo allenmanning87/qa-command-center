@@ -109,9 +109,21 @@ function toggleTheme() {
   applyTheme(!isDark);
 }
 
+async function applyConfig() {
+  try {
+    const config = await fetch('/api/config').then(r => r.json());
+    if (config.appName) {
+      document.title = config.appName;
+      const titleEl = document.querySelector('.topbar-title');
+      if (titleEl) titleEl.textContent = config.appName;
+    }
+  } catch {}
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 initTheme();   // apply before first render to prevent flash
 window.addEventListener('hashchange', navigate);
 navigate();
 updateJiraStatus();
+applyConfig();
 document.getElementById('btn-theme-toggle')?.addEventListener('click', toggleTheme);

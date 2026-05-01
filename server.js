@@ -81,7 +81,10 @@ app.put('/api/data/:collection', (req, res) => {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 app.get('/api/config', (req, res) => {
-  res.json({ orgSubtitle: process.env.ORG_SUBTITLE || '' });
+  res.json({
+    appName: process.env.APP_NAME || 'QA Command Center',
+    orgSubtitle: process.env.ORG_SUBTITLE || '',
+  });
 });
 
 // ── Config Status ─────────────────────────────────────────────────────────────
