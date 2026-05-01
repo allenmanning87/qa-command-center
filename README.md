@@ -94,7 +94,6 @@ This must live at `../claude-usage` relative to this repo (e.g. `C:\Git-Reposito
 | `public/css/main.css` | Full design system with CSS custom properties |
 | `data/` | SQLite database (`app.db`, gitignored — created automatically on first startup) |
 | `data/*.example.json` | Schema reference for each data collection (not loaded by the server) |
-| `scripts/migrate-json-to-db.js` | One-time migration tool (legacy — not needed for fresh installs) |
 | `tests/` | E2E test files (TestCafe) |
 | `.claude/commands/` | Claude Code slash commands — release pipeline, go-live testing, XML generation |
 | `.claude/skills/` | Claude Code skills — build, design, review, deploy |
