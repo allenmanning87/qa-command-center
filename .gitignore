@@ -1,0 +1,8 @@
+.env
+node_modules/
+data/*.json
+!data/*.example.json
+data/app.db
+server.log
+docs/designs/wip-acceptance-criteria.md
+.claude/XML Samples/

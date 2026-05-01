@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Allen Command Center</title>
+  <link rel="stylesheet" href="/css/main.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="layout">
+
+    <header class="topbar">
+      <span class="topbar-title">Allen Command Center</span>
+      <button class="topbar-theme-btn" id="btn-theme-toggle">Dark</button>
+    </header>
+
+    <nav class="tab-bar" id="tab-bar">
+      <a href="#home"    class="tab-link" data-view="home">Home</a>
+      <a href="#time"    class="tab-link" data-view="time">Time Tracker</a>
+      <a href="#kanban"  class="tab-link" data-view="kanban">Kanban</a>
+      <a href="#jira"    class="tab-link" data-view="jira">JIRA Metrics</a>
+    </nav>
+
+    <div id="token-banner" style="display:none;">
+      <span id="token-banner-msg"></span>
+      <button onclick="document.getElementById('token-banner').style.display='none'" class="token-banner-dismiss">Dismiss</button>
+    </div>
+
+    <main class="main-content">
+      <div id="content" class="content-area">
+        <div class="loading-state">Loading...</div>
+      </div>
+    </main>
+
+    <footer class="app-footer">
+      <div class="footer-left">
+        <span id="jira-status-indicator" class="status-dot status-unknown"></span>
+        <span id="jira-status-text" class="footer-text">JIRA: Checking...</span>
+      </div>
+      <span class="footer-text">v1.0.0</span>
+    </footer>
+
+  </div>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
