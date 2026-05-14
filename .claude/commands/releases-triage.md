@@ -66,8 +66,9 @@ Collect from the list:
    - No reply from the user containing "this release is complete"
 4. From those, **exclude** any message where:
    - The PR URL targets the `/RUX/` repo (e.g. `github.com/{GITHUB_ORG}/RUX/pull/...`) — another team handles RUX releases
-   - The Jira ticket URL or tenant URL contains `suts` — another team handles SUTS tenant deployments
 5. The remaining messages are the **pending release requests**.
+
+Note: SUTS-tagged requests are **no longer excluded**. SUTS detection happens in Step 3.7 and is informational only — used to label the PR in the Step 5 report and Step 6 Jira description. RUX repo is the sole exclusion criterion.
 
 If no message with a custom reaction exists, treat all messages as candidates and note this.
 
@@ -77,6 +78,8 @@ If no message with a custom reaction exists, treat all messages as candidates an
 - `getJiraIssue` for every pending ticket (Step 3)
 - `gh api graphql` review-thread query for every confirmed PR (Step 3.5)
 - `gh api repos/.../pulls/N/files` migration check for every ST repo PR (Step 3.6)
+
+SUTS detection (Step 3.7) reuses the Jira issue summary returned by the Step 3 call — no additional network call is needed. Run it during the same analysis pass after the batch returns.
 
 Analyze confidence and assemble the report only after the entire batch has returned.
 
@@ -180,6 +183,19 @@ Replace `REPO` and `N` with the repo name and PR number.
 - If the output is `[]` → no annotation needed.
 - Skip `{RELEASE_APP_REPO}` PRs — MT migrations are handled automatically during the merge process.
 
+## Step 3.7 — Detect SUTS-targeted requests
+
+Flag each pending request as **SUTS-targeted** if any of the following (case-insensitive) contain the substring `suts`:
+- The Jira ticket URL from the post body
+- The tenant URL from the post body (if one is present)
+- The Jira ticket summary returned by the `getJiraIssue` call in Step 3
+
+This detection is **informational only** — it never causes a request to be excluded (RUX repo is the sole exclusion criterion, applied in Step 2). It is used to:
+- Append a `_(SUTS)_` tag to the PR line in the Step 5 report
+- Append a ` — SUTS` annotation to the PR entry in the Step 6 Jira description
+
+No additional API call is required — the Jira summary needed for this check is already in the Step 3 response.
+
 ## Step 4 — Assign confidence level
 
 | Level | Criteria |
@@ -203,7 +219,7 @@ Present results clearly, one block per pending request, in chronological order (
 Requester: [Full name]
 Posted: [time, e.g. 3:04 PM]
 JIRA: [full URL] — [ticket summary from Jira lookup]
-PR: [full GitHub URL] _(has migrations — run manually)_ ← only if Step 3.6 detected migrations; omit otherwise
+PR: [full GitHub URL] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the request; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`.
 Review Comments: [✓ No unresolved comments] OR [⚠ UNRESOLVED COMMENTS — send back to developer]
 Confidence: HIGH
 
@@ -213,7 +229,7 @@ Confidence: HIGH
 Requester: [Full name]
 Posted: [time, e.g. 3:04 PM]
 JIRA: [full URL] — [ticket summary from Jira lookup]
-PR: [full GitHub URL] _(has migrations — run manually)_ ← only if Step 3.6 detected migrations; omit otherwise
+PR: [full GitHub URL] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the request; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`.
 Review Comments: [✓ No unresolved comments] OR [⚠ UNRESOLVED COMMENTS — send back to developer]
 Confidence: [MEDIUM / LOW / NEEDS MANUAL REVIEW]
 Notes: [brief explanation — what matched, what was derived, any discrepancies]
@@ -238,7 +254,7 @@ If there are any NEEDS MANUAL REVIEW items, list what specific information is mi
 - Never guess a PR URL — only report one if it was found in the post or in a Jira comment.
 - Do not include posts from the user that are "this release is complete" replies — only original release request posts.
 - **RUX exclusion**: If a request's PR targets the `{GITHUB_ORG}/RUX` repo, omit it from the report entirely and note at the bottom: `Excluded (RUX — handled by another team): [ticket]`.
-- **SUTS exclusion**: If a request's Jira URL or tenant URL contains `suts`, omit it from the report entirely and note at the bottom: `Excluded (SUTS — handled by another team): [ticket]`.
+- **SUTS handling**: SUTS-tagged requests (detected in Step 3.7) are **not excluded** — they are included in the report and labeled with `_(SUTS)_` on the PR line. They are also annotated with `— SUTS` in the Step 6 Jira description.
 
 ---
 
@@ -336,9 +352,9 @@ Covers all components and features included in today's release. See dependencies
 * Release PRs:
 
     * (ST repos — one bullet per PR, each repo grouped together, alphabetical by repo name)
-    * [https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}](https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}) — has migrations — run manually ← append only if Step 3.6 detected migrations for this PR; omit otherwise
+    * [https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}](https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}) — SUTS — has migrations — run manually ← append ` — SUTS` only if Step 3.7 flagged this request; append ` — has migrations — run manually` only if Step 3.6 detected migrations for this PR; omit either or both otherwise. Order is ` — SUTS` first, then ` — has migrations — run manually`.
     * ({RELEASE_APP_REPO} always last)
-    * [https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}](https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N})
+    * [https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}](https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}) — SUTS ← append ` — SUTS` only if Step 3.7 flagged this request; omit otherwise
 ```
 
 **PR grouping rule:** List all non-`{RELEASE_APP_REPO}` (ST) PRs first, grouped by repo and sorted alphabetically by repo name. List all `{RELEASE_APP_REPO}` (MT) PRs last. This ordering ensures `/releases-merge` naturally processes ST repos before MT when reading top-to-bottom.
