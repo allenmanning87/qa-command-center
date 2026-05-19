@@ -163,6 +163,10 @@ function renderBoard() {
   const el = document.getElementById('kb-board');
   if (!el) return;
 
+  const prevBoard = el.querySelector('.kanban-board');
+  const prevTop   = document.getElementById('kb-scroll-top');
+  const savedScrollLeft = prevBoard ? prevBoard.scrollLeft : (prevTop ? prevTop.scrollLeft : 0);
+
   if (columns.length === 0) {
     el.innerHTML = `<div class="empty-state"><div class="empty-state-title">No columns yet</div><div class="empty-state-desc">Add one in Manage Columns below.</div></div>`;
     return;
@@ -170,16 +174,19 @@ function renderBoard() {
 
   el.innerHTML = `<div class="kanban-board">${columns.map(renderCol).join('')}</div>`;
   initCardDrag();
-  syncScrollSetup();
+  syncScrollSetup(savedScrollLeft);
 }
 
-function syncScrollSetup() {
+function syncScrollSetup(restoreScrollLeft = 0) {
   const board = document.querySelector('.kanban-board');
   const top   = document.getElementById('kb-scroll-top');
   const ghost = document.getElementById('kb-scroll-ghost');
   if (!board || !top || !ghost) return;
 
   ghost.style.width = board.scrollWidth + 'px';
+
+  board.scrollLeft = restoreScrollLeft;
+  top.scrollLeft   = restoreScrollLeft;
 
   if (_scrollTopHandler) top.removeEventListener('scroll', _scrollTopHandler);
   _scrollTopHandler = () => { board.scrollLeft = top.scrollLeft; };
