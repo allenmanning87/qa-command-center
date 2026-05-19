@@ -1068,6 +1068,8 @@ table.table tbody tr:hover td {
   overflow-x: auto;
   overflow-y: hidden;
   margin-bottom: 4px;
+  scrollbar-width: auto;
+  scrollbar-color: var(--gray) var(--gray-light);
 }
 .kanban-scroll-top > div { height: 1px; }
 
@@ -1077,6 +1079,29 @@ table.table tbody tr:hover td {
   align-items: flex-start;
   overflow-x: auto;
   padding-bottom: 8px;
+  scrollbar-width: auto;
+  scrollbar-color: var(--gray) var(--gray-light);
+}
+
+/* Force always-visible horizontal scrollbars (override Win11 overlay auto-hide in Chromium/Edge). */
+.kanban-scroll-top::-webkit-scrollbar,
+.kanban-board::-webkit-scrollbar {
+  height: 12px;
+  -webkit-appearance: none;
+}
+.kanban-scroll-top::-webkit-scrollbar-track,
+.kanban-board::-webkit-scrollbar-track {
+  background: var(--gray-light);
+  border-radius: 6px;
+}
+.kanban-scroll-top::-webkit-scrollbar-thumb,
+.kanban-board::-webkit-scrollbar-thumb {
+  background: var(--gray);
+  border-radius: 6px;
+}
+.kanban-scroll-top::-webkit-scrollbar-thumb:hover,
+.kanban-board::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 
 .kanban-col {
