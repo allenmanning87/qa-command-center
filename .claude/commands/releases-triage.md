@@ -89,6 +89,9 @@ Apply this decision tree for each pending message:
 - **Jira URL**: Look for `{JIRA_BASE_URL}/browse/TICKET` or `{JIRA_DOMAIN_OLD}/browse/TICKET` (old domain, still valid)
 - **PR URL**: Look for `github.com/{GITHUB_ORG}/*/pull/NNN`
 - **Branch name**: Look for text labeled `Branch:`, `BR:`, or a string matching the pattern `[a-z]+-\d+-[a-z-]+`
+- **Tenant URL**: Look for any URL matching `https://*.munirevs.com[/...]`, `https://*.blt.govos.com[/...]`, or `https://suts.blt.govos.com[/...]`. This is the Smoke-Check URL for the PR in the Step 6 Dependencies list. If no tenant URL is present in the post body:
+  - For SUTS-tagged requests → fall back to `https://suts.blt.govos.com/`
+  - For MRNexus (MT) requests → fall back to the originating tenant from the corresponding Jira ticket if mentioned in a developer comment, otherwise use the first tenant URL seen in any developer comment, otherwise leave as `(MT — production smoke check on default MT site)` and flag in the report
 
 ### Derive missing pieces
 - If no Jira key found → extract from branch name: the first segment matching `[A-Za-z]+-\d+` (case-insensitive, e.g. `proj-20097` → `PROJ-20097`)
@@ -330,32 +333,70 @@ Use `editJiraIssue` on the story key. Set any fields that are missing or null:
 | `description` | Use the template below (markdown format, `contentFormat: "markdown"`) |
 
 ### Description template
-Replace `[FULL DATE]` with the formatted date (e.g. "April 10, 2026") and `[PR LIST]` with the grouped PR list described below:
+
+The template below produces a description aligned with the Jira description-grader rubric (target: `good-A`). The grader rejects generic process boilerplate and demands concrete, testable specifics — every section below exists to satisfy one of its rubric items, so do not strip detail in the name of brevity.
+
+Substitute the following placeholders before submitting:
+
+| Placeholder | How to fill it |
+|---|---|
+| `[FULL DATE]` | Formatted date — e.g. `May 20, 2026` |
+| `[ISO DATE]` | Same date in ISO form — e.g. `2026-05-20` |
+| `[RELEASE NARRATIVE]` | One paragraph (2–4 sentences) listing each release item by ticket key and a short value-phrase (e.g. `a batch-edit performance fix (BLTE-20164)`, `a Lyndon, KY XML schema (BLI-2442)`). Use the Jira summaries fetched in Step 3 to derive each value-phrase — paraphrase to one short noun phrase per ticket; do **not** quote the full Jira summary. Close the paragraph with: `Tracking time here feeds release-effort reporting and continuous process improvement.` |
+| `[QA NAME]` | The current user's `displayName` from `atlassianUserInfo` — e.g. `Allen Manning` |
+| `[PR LIST]` | The PR list (see structure below) |
 
 ```
-This ticket tracks the daily release process for [FULL DATE]. It includes preparing release artifacts, coordinating with teams, executing the deployment, and verifying successful implementation. Time logged here helps track release effort and identify process improvements.
+This story coordinates the [FULL DATE] production release across Munirevs' multi-tenant (MRNexus) and single-tenant (ST repo) platforms. [RELEASE NARRATIVE]
 
 ### Acceptance Criteria
 
-1. All PRs in the Dependencies section are merged to `staging` without conflicts
-2. Staging regression tests pass (or all failures are documented known issues)
-3. Production deployment completes without errors; smoke check passes on affected tenant URLs
-4. ✅DONE reaction added to each request in the Release Requests channel after production deploy
-5. Time is logged to this story or its subtasks with activity descriptions before EOD
+1. **Merge.** Given the PRs in Dependencies are ready, when each is merged to `staging`, then no merge conflicts occur and the resulting `staging` build deploys without error.
+2. **Regression validation.** Given staging regression tests are run, then the run completes with either: (a) all tests passing, (b) all failures matching the pre-documented expected-failure list (production Jira step, SUTS migration step), or (c) any other failure documented by the QA Engineer ([QA NAME]) as a comment on this story containing failure name, root cause hypothesis, and the literal text `Approved to proceed — [QA NAME]` before production deployment begins.
+3. **Smoke check.** Given production deployment completes, when smoke checks are run, then each Smoke-Check URL listed in Dependencies returns HTTP 200, the primary navigation renders within 10 seconds, and no new 5xx responses appear in the browser network tab. Pre-existing JS console errors are out of scope.
+4. **Notify requesters.** After production deploy is confirmed, a ✅DONE reaction is added to each original release request post in the Microsoft Teams `Release-Requests-Production` channel (team `BLT-Eng`).
+5. **Time logging.** All time spent on this release is logged to this story or its subtasks with activity descriptions before EOD.
 
 ### Scope
 
-Covers all components and features included in today's release. See dependencies for the specific changes being deployed.
+**In scope:** Deployment of the PRs listed in Dependencies to production on [FULL DATE]. SUTS-tagged PRs target the Colorado SUTS (Sales & Use Tax System) tenant. MRNexus migrations are applied automatically; ST-repo PRs that contain migrations are annotated inline.
+
+**Out of scope:** Hotfixes raised after staging cutoff, schema migrations not referenced in the listed PRs, RUX repo releases (handled by a separate team), and any change not merged to `staging` before regression testing begins.
 
 ### Dependencies
 
-* Release PRs:
+Release PRs (each row lists the PR, Smoke-Check URL, and migration/SUTS notes):
 
-    * (ST repos — one bullet per PR, each repo grouped together, alphabetical by repo name)
-    * [https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}](https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}) — SUTS — has migrations — run manually ← append ` — SUTS` only if Step 3.7 flagged this request; append ` — has migrations — run manually` only if Step 3.6 detected migrations for this PR; omit either or both otherwise. Order is ` — SUTS` first, then ` — has migrations — run manually`.
-    * ({RELEASE_APP_REPO} always last)
-    * [https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}](https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}) — SUTS ← append ` — SUTS` only if Step 3.7 flagged this request; omit otherwise
+[PR LIST]
+
+### Definition of Done
+
+1. All Dependencies PRs merged to `staging` with no conflicts (per AC #1).
+2. Regression tests pass or all failures signed off per AC #2.
+3. All Smoke-Check URLs verified healthy after production deploy (per AC #3).
+4. ✅DONE reactions posted to every release request in the Teams `Release-Requests-Production` channel (per AC #4).
+5. Time logged on this story or its subtasks with activity descriptions before EOD (per AC #5).
 ```
+
+### `[PR LIST]` structure
+
+One bullet per PR. Each bullet must include the PR link, the Smoke-Check URL (from Step 3 tenant-URL extraction), and any SUTS / migration annotations:
+
+```
+* [https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}](https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}) — Smoke-Check URL: {tenant-url} — SUTS — has migrations — run manually
+* [https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}](https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}) — Smoke-Check URL: {tenant-url} — SUTS — MRNexus migration applied automatically
+* [https://github.com/{GITHUB_ORG}/{st-repo-without-migration}/pull/{N}](https://github.com/{GITHUB_ORG}/{st-repo-without-migration}/pull/{N}) — Smoke-Check URL: {tenant-url} — No migration
+```
+
+Annotation rules per bullet (compose in this order, separated by ` — `):
+
+1. **PR link** — `[full-url](full-url)` markdown link, same URL in both positions so Jira renders it clickable.
+2. **Smoke-Check URL** — `Smoke-Check URL: {tenant-url-from-step-3}`. Always include — this is what AC #3 tests against.
+3. **SUTS** — append ` — SUTS` if Step 3.7 flagged the request. Omit otherwise.
+4. **Migration annotation** — required on every bullet:
+   - ST repo with migrations detected in Step 3.6 → `has migrations — run manually`
+   - ST repo with no migrations → `No migration`
+   - MRNexus PR (regardless of SUTS) → `MRNexus migration applied automatically`
 
 **PR grouping rule:** List all non-`{RELEASE_APP_REPO}` (ST) PRs first, grouped by repo and sorted alphabetically by repo name. List all `{RELEASE_APP_REPO}` (MT) PRs last. This ordering ensures `/releases-merge` naturally processes ST repos before MT when reading top-to-bottom.
 
