@@ -6,7 +6,7 @@ Before doing anything else, read the `.env` file at the repo root using the `Rea
 - `RELEASE_DEPLOY_REPO`
 - `RELEASE_APP_REPO`
 - `RELEASE_MT_PROD_SITE_DIR`
-- `RELEASE_SUTS_SITE_DIR`
+- `RELEASE_SUTS_PROD_SITE_DIR`
 
 ---
 
@@ -82,7 +82,7 @@ gh workflow run legacy-deploy-blt-mt.yml \
   --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} \
   --field environment=production \
   --field release-tag={release_tag} \
-  --field site-directory={RELEASE_SUTS_SITE_DIR} \
+  --field site-directory={RELEASE_SUTS_PROD_SITE_DIR} \
   --field has-migrations=true
 ```
 
