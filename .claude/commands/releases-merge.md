@@ -136,26 +136,22 @@ Title format: list every Jira ticket key from today's MT PRs, space-separated, t
 
 Report the new PR URL.
 
-### 4d — Poll CI checks + kick off Phase 4 in parallel
+### 4d — Poll CI checks on the staging PR, then gate on explicit go-ahead
 
-Start a background poll that waits until at least one CI check appears on the PR (i.e., the first `gh pr checks` call returns any output rather than an empty result):
+Poll the staging → main PR's CI checks to completion in a background task:
 
-```bash
-until gh pr checks {staging_pr_number} --repo {GITHUB_ORG}/{RELEASE_APP_REPO} 2>&1 | grep -q "."; do sleep 15; done
-```
-
-**As soon as checks are visible** (even if still pending), immediately invoke the `/releases-regression` skill in parallel — do not wait for CI to finish first. CI and the deploy/regression pipelines will run concurrently.
-
-Then continue polling CI to completion in a second background task:
 ```bash
 until ! gh pr checks {staging_pr_number} --repo {GITHUB_ORG}/{RELEASE_APP_REPO} 2>&1 | grep -q "pending"; do sleep 30; done && gh pr checks {staging_pr_number} --repo {GITHUB_ORG}/{RELEASE_APP_REPO} 2>&1
 ```
 
-- Stop CI polling as soon as all checks have completed (pass or fail).
-- Report all CI results: list any failing checks with their URLs so the user can send them to the dev for review.
+- Stop polling as soon as all checks have completed (pass or fail).
+- Report all CI results: list any failing checks with their URLs.
 - If the 15-minute timeout is reached with checks still pending: report current status and stop.
 
-After reporting CI results, **do not post the `/fast-forward` comment yet** — both CI passing AND the Phase 4 regressions completing are required before fast-forward is allowed. Wait for `/releases-regression` (Phase 4) to finish and report its results. Only after both CI and regressions are complete, **stop and present a summary, then explicitly ask the user: "Ready to post /fast-forward?"** Do not proceed until the user says yes (e.g. "yes", "go ahead", "proceed"). GitHub PR approval status does NOT count as the user's confirmation — the user must explicitly authorize this step in the current conversation.
+**The fast-forward gate is now CI-only.** Phase 4 (`/releases-regression`) has been retired — the same e2e regression suite now runs as a blocking tollgate inside the Phase 5 production deploy (`deploy-production.yml`), so there is no separate regression step to wait on here. Do **not** invoke `/releases-regression`.
+
+- **If CI is not green:** report the failing checks with URLs so the user can send them to the developer. Do **not** post `/fast-forward`. Stop.
+- **If CI is green:** **do not post the `/fast-forward` comment automatically.** Present a summary and explicitly ask the user: **"CI is green on the staging PR. Ready to post /fast-forward?"** Do not proceed until the user says yes (e.g. "yes", "go ahead", "proceed"). GitHub PR approval status does NOT count as confirmation — the user must explicitly authorize this step in the current conversation.
 
 ### 4e — Trigger fast-forward merge
 Only after the user explicitly says to proceed:
@@ -182,7 +178,7 @@ gh release list --repo {GITHUB_ORG}/{RELEASE_APP_REPO} --limit 1 --json tagName,
 - If 5 minutes elapse without a new tag, report and stop — the automation may still be running.
 
 ### 4h — Proceed to Phase 5
-After the release tag is confirmed (or the 5-minute timeout is reached), output the Step 5 final report and then immediately invoke the `/releases-deploy` skill — do not wait for the user to prompt.
+After the release tag is confirmed (or the 5-minute timeout is reached), output the Step 5 final report and then invoke the `/releases-deploy` skill. Note that `/releases-deploy` now drives the new `deploy-production.yml` workflow (which runs the e2e regression suite as a built-in blocking gate) and has its own explicit go-ahead gate before the full-production deploy.
 
 ---
 

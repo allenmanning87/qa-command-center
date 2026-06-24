@@ -14,9 +14,10 @@ You are executing **Phase 1** (Teams triage) and **Phase 2** (Jira story creatio
 
 - **Phase 1** = Steps 1–5: Read the Teams channel, identify pending release requests, resolve tickets and PRs, output the triage report, and wait for you to confirm.
 - **Phase 2** = Steps 6–7: Create (or verify) today's Daily Releases Jira story with all fields, issue links, and subtasks configured.
-- **Phase 3** = `/releases-merge` skill (merge PRs, create release tags)
-- **Phase 4** = `/releases-regression` skill (staging regression tests)
-- **Phase 5** = `/releases-deploy` skill (production deploy)
+- **Phase 3** = `/releases-merge` skill (merge PRs, create release tags; gate on staging-PR CI + explicit go-ahead for `/fast-forward`)
+- **Phase 5** = `/releases-deploy` skill (production deploy via `deploy-production.yml`, which runs the e2e regression suite as a built-in blocking tollgate)
+
+> **Phase 4 retired:** the standalone `/releases-regression` step no longer exists — its e2e suite now runs as a blocking gate inside the Phase 5 deploy workflow.
 
 ## Channel details
 
