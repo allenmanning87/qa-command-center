@@ -19,6 +19,30 @@ You are executing **Phase 1** (Teams triage) and **Phase 2** (Jira story creatio
 
 > **Phase 4 retired:** the standalone `/releases-regression` step no longer exists — its e2e suite now runs as a blocking gate inside the Phase 5 deploy workflow.
 
+## Pre-flight — Determine the release blackout window
+
+**Policy:** No releases are permitted in the window spanning **3 business days before through 3 business days after the 20th of the month** — *unless* the request is a **P0 or P1** priority ticket. During the blackout window, any pending request whose Jira priority is **not** P0/P1 must be **held** (excluded from today's release) and flagged in the report.
+
+Compute the window up front, using today's date (the `currentDate` provided in context; confirm with `date +%F` if unsure):
+
+1. Anchor on the **20th of the current month**.
+2. Walk **backward 3 business days** (Mon–Fri, skipping Sat/Sun) from the 20th → blackout **start** date.
+3. Walk **forward 3 business days** from the 20th → blackout **end** date.
+4. The blackout window is `[start, end]` inclusive. *(Worked example: June 2026 — the 20th is a Saturday; 3 business days before = Tue Jun 17, 3 business days after = Wed Jun 24 → blackout = **Jun 17–24, 2026**.)*
+5. Record whether **today** falls inside `[start, end]`. Store as `{IN_BLACKOUT}` (true/false). Always report the computed window in the Step 5 header, regardless of the value.
+
+> Business-day counting excludes weekends only. If company holidays might shift the count, note the uncertainty in the report rather than guessing.
+
+If `{IN_BLACKOUT}` is false, the priority gate in Step 3.8 is a no-op — every priority is eligible. Priority is still fetched and shown in the report for visibility.
+
+### Priority → eligibility mapping
+
+This Jira instance uses two overlapping priority naming schemes. A request is **blackout-eligible (P0/P1)** if its priority name matches any of:
+- contains `(p0)` or `(p1)` — e.g. `Emergency (p0)`, `Critical (p1)`
+- starts with `P1` — e.g. `P1 Highest-Critical`
+
+**Everything else is held during blackout**, including: `Major (p2)`, `Minor (p3)`, `Trivial (p4)`, `P2 High`, `P3 Medium (Default)`, `P4 Low`.
+
 ## Channel details
 
 - Chat ID: `19:7e219e0790d54cd4811d6a4ecad93c5a@thread.tacv2`
@@ -80,7 +104,7 @@ If no message with a custom reaction exists, treat all messages as candidates an
 - `gh api graphql` review-thread query for every confirmed PR (Step 3.5)
 - `gh api repos/.../pulls/N/files` migration check for every ST repo PR (Step 3.6)
 
-SUTS detection (Step 3.7) reuses the Jira issue summary returned by the Step 3 call — no additional network call is needed. Run it during the same analysis pass after the batch returns.
+SUTS detection (Step 3.7) reuses the Jira issue summary returned by the Step 3 call — no additional network call is needed. The blackout priority gate (Step 3.8) reuses `fields.priority.name` from the same call. Run both during the same analysis pass after the batch returns.
 
 Analyze confidence and assemble the report only after the entire batch has returned.
 
@@ -99,7 +123,7 @@ Apply this decision tree for each pending message:
 - If no PR URL found → proceed to Jira comment lookup below
 
 ### Jira comment lookup (always do this, even when post provides both)
-Fetch the Jira issue using `getJiraIssue` with `fields: ["summary", "status", "comment"]` and `responseContentFormat: "markdown"`. Fetch all pending tickets in parallel.
+Fetch the Jira issue using `getJiraIssue` with `fields: ["summary", "status", "comment", "priority"]` and `responseContentFormat: "markdown"`. Fetch all pending tickets in parallel. The `priority` field (`fields.priority.name`) feeds the blackout gate in Step 3.8 — no extra API call is needed.
 
 **Large response fallback:** If the tool output says `Output too large... saved to: C:/path/to/file.json`, use this Bash command to extract the comments (use forward slashes in the path):
 
@@ -200,6 +224,21 @@ This detection is **informational only** — it never causes a request to be exc
 
 No additional API call is required — the Jira summary needed for this check is already in the Step 3 response.
 
+## Step 3.8 — Apply the release blackout priority gate
+
+Using `{IN_BLACKOUT}` (from the Pre-flight blackout computation) and each ticket's `fields.priority.name` (from the Step 3 `getJiraIssue` response — no extra call):
+
+- **If `{IN_BLACKOUT}` is false** → gate is a no-op. Every request is eligible. Still record each request's priority name for the report.
+- **If `{IN_BLACKOUT}` is true** → for each pending request, classify its priority via the eligibility mapping in the Pre-flight section:
+  - **Eligible (P0/P1)** — priority name contains `(p0)` / `(p1)`, or starts with `P1` → request stays in today's release.
+  - **Held (not P0/P1)** — any other priority → mark the request **HELD — release blackout (not P0/P1)**. It is **excluded from today's release**: omit it from the Jira story PR list in Step 6, and do **not** merge it in Phase 3. Surface it prominently in the Step 5 report so the user can tell the requester it's deferred until after the blackout window.
+
+This gate is independent of confidence and review-comment status — a HIGH-confidence, clean-review P2 ticket is still HELD during the blackout. Like the review-comment gate, the user may explicitly override it (e.g. a P2 that leadership has cleared); apply an override only on explicit user direction in the conversation, and note it in the report.
+
+Add a `Priority` field to every request block in the Step 5 report:
+- `✓ {priority name} — eligible` (P0/P1, or any priority outside the blackout window)
+- `⛔ {priority name} — HELD (release blackout, not P0/P1)` (held requests)
+
 ## Step 4 — Assign confidence level
 
 | Level | Criteria |
@@ -216,6 +255,7 @@ Present results clearly, one block per pending request, in chronological order (
 ---
 
 **Pending Release Requests — [today's date]**
+**Release blackout window: [start]–[end]** — Today is [inside / outside] the blackout. [If inside: Only P0/P1 requests are eligible; all others are HELD.]
 
 ---
 
@@ -225,6 +265,7 @@ Posted: [time, e.g. 3:04 PM]
 JIRA: [full URL] — [ticket summary from Jira lookup]
 PR: [full GitHub URL] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the request; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`.
 Review Comments: [✓ No unresolved comments] OR [⚠ UNRESOLVED COMMENTS — send back to developer]
+Priority: [✓ {priority name} — eligible] OR [⛔ {priority name} — HELD (release blackout, not P0/P1)]
 Confidence: HIGH
 
 ---
@@ -235,6 +276,7 @@ Posted: [time, e.g. 3:04 PM]
 JIRA: [full URL] — [ticket summary from Jira lookup]
 PR: [full GitHub URL] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the request; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`.
 Review Comments: [✓ No unresolved comments] OR [⚠ UNRESOLVED COMMENTS — send back to developer]
+Priority: [✓ {priority name} — eligible] OR [⛔ {priority name} — HELD (release blackout, not P0/P1)]
 Confidence: [MEDIUM / LOW / NEEDS MANUAL REVIEW]
 Notes: [brief explanation — what matched, what was derived, any discrepancies]
 
@@ -250,6 +292,10 @@ After the list, include a **Summary** line:
 
 If there are any NEEDS MANUAL REVIEW items, list what specific information is missing so the user knows exactly what to look for.
 
+If the blackout gate (Step 3.8) HELD any requests, add a **Blackout** line listing them so the user can defer them:
+`Held for release blackout ([window]) — not P0/P1: [ticket] ({priority}), [ticket] ({priority})`
+These are excluded from Step 6's story PR list and from Phase 3 merging unless the user explicitly overrides.
+
 ## Important rules
 
 - Always look up the Jira ticket even when the post appears to have everything — the developer's comment is the source of truth for branch and PR.
@@ -259,6 +305,7 @@ If there are any NEEDS MANUAL REVIEW items, list what specific information is mi
 - Do not include posts from the user that are "this release is complete" replies — only original release request posts.
 - **RUX exclusion**: If a request's PR targets the `{GITHUB_ORG}/RUX` repo, omit it from the report entirely and note at the bottom: `Excluded (RUX — handled by another team): [ticket]`.
 - **SUTS handling**: SUTS-tagged requests (detected in Step 3.7) are **not excluded** — they are included in the report and labeled with `_(SUTS)_` on the PR line. They are also annotated with `— SUTS` in the Step 6 Jira description.
+- **Release blackout**: During the blackout window (3 business days before/after the 20th, computed in Pre-flight), only **P0/P1** requests are eligible — all others are HELD (Step 3.8), excluded from the Step 6 story PR list and from Phase 3 merging unless the user explicitly overrides. Outside the window the gate is a no-op. Always show the computed window and each request's priority in the report.
 
 ---
 
