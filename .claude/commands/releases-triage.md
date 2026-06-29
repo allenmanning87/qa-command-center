@@ -315,21 +315,21 @@ After outputting the Step 5 report, **stop and wait for the user to confirm** be
 
 ---
 
-## Step 5.7 — Release Team channel notification check
+## Step 5.7 — BLT-Eng General channel notification check
 
-Before creating the Jira story, check whether today's start notification has been posted in the Release Team channel:
+Before creating the Jira story, check whether today's start notification has been posted in the BLT-Eng General channel:
 
 ```
-teams:///teams/45bde3a3-65a4-4699-8fe8-40fa4317752e/channels/19%3A4fba8c314fec43c49fea7724dbbcdc02%40thread.tacv2/messages
+teams:///teams/45bde3a3-65a4-4699-8fe8-40fa4317752e/channels/19%3ApFAL1LTrHdyxIuqwtayrJvk1lTLkfDT-_Z9pPbTn5HY1%40thread.tacv2/messages
 ```
 
 Scan the most recent messages for a post from the user created **today** (current date) that contains:
 > I'm gonna start merging to `staging` for today's MT release
 
-- **If found today**: report `✓ Release Team notified` and proceed to Step 6 immediately.
+- **If found today**: report `✓ Team notified` and proceed to Step 6 immediately.
 - **If not found**: display the following to the user and **stop until they confirm** the post has been made:
 
-> Please post the following in the **Release Team 🚀** channel before I continue:
+> Please post the following in the **BLT-Eng General** channel before I continue:
 >
 > `I'm gonna start merging to staging for today's MT release`
 >
