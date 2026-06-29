@@ -138,9 +138,9 @@ gh run view {run_id} --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} --json jobs --jq 
 
 ---
 
-## Step — Notify Release Team channel
+## Step — Notify BLT-Eng General channel
 
-After the full-production deploy succeeds, display the following and ask the user to post it in the **Release Team 🚀** channel before you present the Final Report:
+After the full-production deploy succeeds, display the following and ask the user to post it in the **BLT-Eng General** channel before you present the Final Report:
 
 > `I'm done with today's MT release, if someone needs to do theirs`
 
