@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Atlassian__createJiraIssue",
+      "mcp__claude_ai_Atlassian__editJiraIssue",
+      "mcp__claude_ai_Atlassian__createIssueLink",
+      "mcp__claude_ai_Atlassian__addWorklogToJiraIssue",
+      "mcp__claude_ai_Atlassian__transitionJiraIssue"
+    ]
+  }
+}
