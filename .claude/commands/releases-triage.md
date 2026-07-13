@@ -21,14 +21,14 @@ You are executing **Phase 1** (Teams triage) and **Phase 2** (Jira story creatio
 
 ## Pre-flight — Determine the release blackout window
 
-**Policy:** No releases are permitted in the window spanning **3 business days before through 3 business days after the 20th of the month** — *unless* the request is a **P0 or P1** priority ticket. During the blackout window, any pending request whose Jira priority is **not** P0/P1 must be **held** (excluded from today's release) and flagged in the report.
+**Policy:** No releases are permitted during a blackout window of **4 business days** around the 20th of the month — **2 business days before the anchor, the anchor day itself, and 1 business day after the anchor** — *unless* the request is a **P0 or P1** priority ticket. During the blackout window, any pending request whose Jira priority is **not** P0/P1 must be **held** (excluded from today's release) and flagged in the report.
 
 Compute the window up front, using today's date (the `currentDate` provided in context; confirm with `date +%F` if unsure):
 
-1. Anchor on the **20th of the current month**.
-2. Walk **backward 3 business days** (Mon–Fri, skipping Sat/Sun) from the 20th → blackout **start** date.
-3. Walk **forward 3 business days** from the 20th → blackout **end** date.
-4. The blackout window is `[start, end]` inclusive. *(Worked example: June 2026 — the 20th is a Saturday; 3 business days before = Tue Jun 17, 3 business days after = Wed Jun 24 → blackout = **Jun 17–24, 2026**.)*
+1. **Determine the anchor.** Start from the **20th of the current month**. If the 20th is a Saturday or Sunday, **roll the anchor forward to the next business day** (Mon–Fri). Otherwise the anchor is the 20th. The anchor is always a business day.
+2. Walk **backward 2 business days** (Mon–Fri, skipping Sat/Sun) from the anchor → blackout **start** date.
+3. Walk **forward 1 business day** from the anchor → blackout **end** date.
+4. The blackout window is `[start, end]` inclusive. It always contains exactly **4 business days**: the two before the anchor, the anchor, and the one after. *(Worked example A: July 2026 — the 20th is a Monday (business day), so anchor = Mon Jul 20; 2 business days before = Thu Jul 16 and Fri Jul 17, 1 business day after = Tue Jul 21 → blackout business days = **Thu Jul 16, Fri Jul 17, Mon Jul 20, Tue Jul 21**; window `[Jul 16, Jul 21]`.)* *(Worked example B: June 2026 — the 20th is a Saturday, so roll the anchor forward to Mon Jun 22; 2 business days before = Thu Jun 18 and Fri Jun 19, 1 business day after = Tue Jun 23 → blackout business days = **Thu Jun 18, Fri Jun 19, Mon Jun 22, Tue Jun 23**; window `[Jun 18, Jun 23]`.)*
 5. Record whether **today** falls inside `[start, end]`. Store as `{IN_BLACKOUT}` (true/false). Always report the computed window in the Step 5 header, regardless of the value.
 
 > Business-day counting excludes weekends only. If company holidays might shift the count, note the uncertainty in the report rather than guessing.
@@ -305,7 +305,7 @@ These are excluded from Step 6's story PR list and from Phase 3 merging unless t
 - Do not include posts from the user that are "this release is complete" replies — only original release request posts.
 - **RUX exclusion**: If a request's PR targets the `{GITHUB_ORG}/RUX` repo, omit it from the report entirely and note at the bottom: `Excluded (RUX — handled by another team): [ticket]`.
 - **SUTS handling**: SUTS-tagged requests (detected in Step 3.7) are **not excluded** — they are included in the report and labeled with `_(SUTS)_` on the PR line. They are also annotated with `— SUTS` in the Step 6 Jira description.
-- **Release blackout**: During the blackout window (3 business days before/after the 20th, computed in Pre-flight), only **P0/P1** requests are eligible — all others are HELD (Step 3.8), excluded from the Step 6 story PR list and from Phase 3 merging unless the user explicitly overrides. Outside the window the gate is a no-op. Always show the computed window and each request's priority in the report.
+- **Release blackout**: During the blackout window (4 business days around the 20th — 2 business days before the anchor, the anchor day, and 1 business day after; anchor rolls to the next business day if the 20th is a weekend; computed in Pre-flight), only **P0/P1** requests are eligible — all others are HELD (Step 3.8), excluded from the Step 6 story PR list and from Phase 3 merging unless the user explicitly overrides. Outside the window the gate is a no-op. Always show the computed window and each request's priority in the report.
 
 ---
 
