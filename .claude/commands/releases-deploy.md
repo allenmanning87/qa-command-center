@@ -90,20 +90,19 @@ gh run view {run_id} --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} --json jobs --jq 
 - **`deploy-automation` or `deploy-production` failed** → report the failing job and step names prominently and **stop**. Note that if `deploy-production` failed mid-run, production sites may be partially deployed — surface this clearly.
 - `cancelled` → report and stop.
 
-> **Note on sites deployed.** `deploy-production.yml` deploys to the automation sites (`blt1-automation-production`, `colorado-automation-production`) and the live production sites (`nexus8`, `nexus8-api`, `govos-blt-colorado`). It does **not** deploy to any staging site — that is handled by Step 3 below.
+> **Note on sites deployed.** `deploy-production.yml` deploys to the automation sites (`blt1-automation-production`, `colorado-automation-production`) and the live production sites (`nexus8`, `nexus8-api`, `govos-blt-colorado`). It **also** deploys + migrates the staging `nexus8` site (plus checkout-only `suts-staging` / `sjc-staging`) and the `munirevs-mrnexus` QA site via its built-in `deploy-staging` and `deploy-qa-munirevs` jobs, which run after `deploy-production` succeeds. It does **not** deploy to the `blt1-automation` staging site — that is the sole remaining site handled by Step 3 below.
 
 ---
 
-## Step 3 — Deploy to MT staging (two sites, sequentially)
+## Step 3 — Deploy to MT staging (`{RELEASE_BLT1_AUTOMATION_STAGING}` only)
 
-`deploy-production.yml` does not touch any staging site, so after the full-production deploy reaches a success state, deploy the same release tag to **both** MT staging site directories using the legacy workflow (this keeps the staging mirrors in sync with production, as the old Phase 5 did):
+`deploy-production.yml` now deploys + migrates staging `nexus8` itself (via its built-in `deploy-staging` job, which runs after `deploy-production` succeeds), so **do not** legacy-deploy `{RELEASE_MT_PROD_SITE_DIR}` here — doing so would deploy and migrate `nexus8` a second time in the same release. The only staging site the production workflow does **not** cover is `{RELEASE_BLT1_AUTOMATION_STAGING}`, so after the full-production deploy reaches a success state, deploy the same release tag to just that one site using the legacy workflow (this keeps its staging mirror in sync with production):
 
-1. `{RELEASE_MT_PROD_SITE_DIR}` (e.g. `nexus8`)
-2. `{RELEASE_BLT1_AUTOMATION_STAGING}` (e.g. `blt1-automation`)
+1. `{RELEASE_BLT1_AUTOMATION_STAGING}` (e.g. `blt1-automation`)
 
-**Run them strictly sequentially — site 1 to completion, then site 2.** Both runs target `environment=staging`, so they share the workflow's `ltc-staging-wireguard` concurrency lock (`cancel-in-progress: false`). Triggering both at once would queue the second behind the first; rather than rely on the pending queue (which holds only one run and can be bumped by any other staging trigger), trigger site 2 only after site 1 completes. Do **not** run them concurrently.
+> **Skipped:** `{RELEASE_MT_PROD_SITE_DIR}` (e.g. `nexus8`) — now handled by `deploy-production.yml`'s `deploy-staging` job. (Historical note: prior to the BLTE-22905 `deploy-production.yml` change, Step 3 legacy-deployed both `nexus8` and `blt1-automation`.)
 
-For **each** site directory `{SITE}` in the order above:
+For the site directory `{SITE}` (`{RELEASE_BLT1_AUTOMATION_STAGING}`):
 
 ```bash
 gh workflow run legacy-deploy-blt-mt.yml \
@@ -132,9 +131,9 @@ Fetch job/step detail:
 gh run view {run_id} --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} --json jobs --jq '.jobs[] | {name: .name, conclusion: .conclusion, failedSteps: [.steps[]? | select(.conclusion == "failure") | .name]}'
 ```
 
-- `success` → report `✓ MT staging deploy complete ({SITE})` and move to the next site.
-- **`{RELEASE_BLT1_AUTOMATION_STAGING}` only — `failure` where the sole failing step is `"Run database migrations"`** → **known/expected** for this site. The release tag is deployed (checkout succeeds before migrations run); the migration-step failure is expected behavior on this environment and needs no action. Report as `⚠ MT staging deploy complete ({SITE} — migration step failed, expected)` and proceed. (Observed cause: `console.php` cannot bootstrap the migrations command on this site — a known limitation of the `blt1-automation` staging environment.)
-- Any other `failure` / `cancelled` — including **any** failure on `{RELEASE_MT_PROD_SITE_DIR}`, or a `{RELEASE_BLT1_AUTOMATION_STAGING}` failure in a step **other than** "Run database migrations" — → fetch job/step detail and report the failure prominently. (Production is already live at this point; a staging failure does not roll back production, but flag it so the staging mirror gets fixed.) Still attempt the second site unless the failure indicates the runner/lock is stuck.
+- `success` → report `✓ MT staging deploy complete ({SITE})`.
+- **`failure` where the sole failing step is `"Run database migrations"`** → **known/expected** for `{RELEASE_BLT1_AUTOMATION_STAGING}`. The release tag is deployed (checkout succeeds before migrations run); the migration-step failure is expected behavior on this environment and needs no action. Report as `⚠ MT staging deploy complete ({SITE} — migration step failed, expected)` and proceed. (Observed cause: `console.php` cannot bootstrap the migrations command on this site — a known limitation of the `blt1-automation` staging environment.)
+- Any other `failure` / `cancelled` — a `{RELEASE_BLT1_AUTOMATION_STAGING}` failure in a step **other than** "Run database migrations" — → fetch job/step detail and report the failure prominently. (Production is already live at this point; a staging failure does not roll back production, but flag it so the staging mirror gets fixed.)
 
 ---
 
@@ -160,7 +159,7 @@ Release tag: {tag}
     e2e gate (blt1-automation-production): {conclusion}
     e2e gate (suts-automation-production): {conclusion}
     production sites (nexus8, nexus8-api, govos-blt-colorado): deployed & migrated
-✓ MT staging deploy ({RELEASE_MT_PROD_SITE_DIR} @ staging) — {conclusion} — {run_url}
+    staging nexus8 + qa munirevs-mrnexus: deployed & migrated (via deploy-production.yml built-in jobs)
 ✓ MT staging deploy ({RELEASE_BLT1_AUTOMATION_STAGING} @ staging) — {conclusion} — {run_url}
 ```
 
@@ -171,7 +170,7 @@ If any job failed, include the failing job and step names so the user can invest
 ## Important Rules
 
 - The standard flow is a single "Deploy to full production" trigger, gated on explicit user go-ahead obtained **before** triggering. Never trigger full production without that go-ahead. Do not run "automation site only" as a pre-step unless the user explicitly asks (it would deploy the automation sites twice).
-- After the full-production deploy succeeds, always run Step 3 (MT staging deploy via `legacy-deploy-blt-mt.yml`). `deploy-production.yml` does not deploy staging, so skipping Step 3 would leave the staging mirror behind production.
+- After the full-production deploy succeeds, always run Step 3 (MT staging deploy via `legacy-deploy-blt-mt.yml`) for `{RELEASE_BLT1_AUTOMATION_STAGING}` only. `deploy-production.yml` now covers staging `nexus8` (and qa `munirevs-mrnexus`) via its built-in jobs, so **do not** legacy-deploy `nexus8` — but `{RELEASE_BLT1_AUTOMATION_STAGING}` is still not covered, so skipping Step 3 would leave that staging mirror behind production.
 - The e2e tollgate inside the workflow is the release's regression check — never bypass it or override a failed gate without explicit user direction.
 - Treat any failed job or step in the `deploy-production.yml` run (Steps 1–2) as a real failure — that workflow has no known-expected failures. The only expected failure in Phase 5 is the Step 3 `Run database migrations` step on `{RELEASE_BLT1_AUTOMATION_STAGING}`.
 - Never re-trigger the workflow while a production run is already in progress (production deploys share a single WireGuard peer and must not overlap).
