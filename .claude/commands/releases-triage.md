@@ -10,18 +10,20 @@ Before doing anything else, read the `.env` file at the repo root using the `Rea
 
 ---
 
-You are executing **Phase 1** (Teams triage) and **Phase 2** (Jira story creation) of the daily release process.
+You are executing **Phase 1** (Jira-story triage) and **Phase 2** (Jira story verification + PR list) of the daily release process.
 
-- **Phase 1** = Steps 1–5: Read the Teams channel, identify pending release requests, resolve tickets and PRs, output the triage report, and wait for you to confirm.
-- **Phase 2** = Steps 6–7: Create (or verify) today's Daily Releases Jira story with all fields, issue links, and subtasks configured.
+- **Phase 1** = Steps 1–5: Resolve today's release story, read its linked tickets, discover the PR(s) for each ticket from its Jira comments, run the PR gates, output the triage report, and wait for you to confirm.
+- **Phase 2** = Steps 6–7: Verify today's Daily Releases Jira story's fields and subtasks, and write the discovered PR list into the story's Dependencies section.
 - **Phase 3** = `/releases-merge` skill (merge PRs, create release tags; gate on staging-PR CI + explicit go-ahead for `/fast-forward`)
 - **Phase 5** = `/releases-deploy` skill (production deploy via `deploy-production.yml`, which runs the e2e regression suite as a built-in blocking tollgate)
 
 > **Phase 4 retired:** the standalone `/releases-regression` step no longer exists — its e2e suite now runs as a blocking gate inside the Phase 5 deploy workflow.
 
+> **Source of truth changed:** release requests are no longer read from the `Release-Requests-Production` Teams channel. They are now the tickets **linked** to that day's release story under `{JIRA_RELEASES_EPIC}`. Because requesters no longer post PRs, triage **discovers each ticket's PR(s) by scanning that ticket's Jira comments**.
+
 ## Pre-flight — Determine the release blackout window
 
-**Policy:** No releases are permitted during a blackout window of **4 business days** around the 20th of the month — **2 business days before the anchor, the anchor day itself, and 1 business day after the anchor** — *unless* the request is a **P0 or P1** priority ticket. During the blackout window, any pending request whose Jira priority is **not** P0/P1 must be **held** (excluded from today's release) and flagged in the report.
+**Policy:** No releases are permitted during a blackout window of **4 business days** around the 20th of the month — **2 business days before the anchor, the anchor day itself, and 1 business day after the anchor** — *unless* the request is a **P0 or P1** priority ticket. During the blackout window, any linked ticket whose Jira priority is **not** P0/P1 must be **held** (excluded from today's release) and flagged in the report.
 
 Compute the window up front, using today's date (the `currentDate` provided in context; confirm with `date +%F` if unsure):
 
@@ -43,87 +45,69 @@ This Jira instance uses two overlapping priority naming schemes. A request is **
 
 **Everything else is held during blackout**, including: `Major (p2)`, `Minor (p3)`, `Trivial (p4)`, `P2 High`, `P3 Medium (Default)`, `P4 Low`.
 
-## Channel details
-
-- Chat ID: `19:7e219e0790d54cd4811d6a4ecad93c5a@thread.tacv2`
-- Read messages using: `teams:///chats/19%3A7e219e0790d54cd4811d6a4ecad93c5a%40thread.tacv2/messages`
-- Read a specific message using: `teams:///chats/19%3A7e219e0790d54cd4811d6a4ecad93c5a%40thread.tacv2/messages/{messageId}`
-- Jira cloud ID: `{JIRA_DOMAIN}` (from `JIRA_BASE_URL` in `.env`)
-
 ## Pre-flight — Load deferred tools
 
 All MCP tools used in this workflow are deferred and **must be loaded via ToolSearch before any other step**. Do this first, in parallel:
 
 ```
-ToolSearch("select:mcp__claude_ai_Microsoft_365__read_resource")
+ToolSearch("select:mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql")
 ToolSearch("select:mcp__claude_ai_Atlassian__getJiraIssue")
 ToolSearch("select:mcp__claude_ai_Atlassian__createIssueLink")
 ToolSearch("select:mcp__claude_ai_Atlassian__addWorklogToJiraIssue")
 ```
 
-Do not proceed until both tools are confirmed available.
+Do not proceed until these tools are confirmed available. (`atlassianUserInfo`, `editJiraIssue`, `getTransitionsForJiraIssue`, and `transitionJiraIssue` are loaded on demand in Phase 2.)
 
-## Step 1 — Fetch channel messages
+## Step 1 — Resolve today's release story
 
-Read the channel message list URI. It returns the most recent messages as concatenated JSON objects (not a JSON array — parse each `{...}` block separately).
+The release story is the anchor for everything below: its linked tickets are the release requests.
 
-**Important limitation:** The list endpoint does NOT include `reactions` data. To check whether a message has a custom reaction, you must fetch it individually via the per-message URI.
+1. **If the user provided a story key** in the invocation (e.g. `BLTE-23558`) → use it directly and skip to Step 2. Report the key so it's on the record.
+2. **Otherwise, discover it by date.** Search under the epic using JQL (substitute `{TODAY}` = the ISO date from `currentDate`, and `{JIRA_RELEASES_EPIC}` from `.env`):
 
-**Deleted messages:** Any message with a `null` body content AND a `deletedDateTime` field set is a deleted post — skip it entirely, it is not a release request.
+   ```
+   summary ~ "Releases {TODAY}" AND parent = {JIRA_RELEASES_EPIC} AND statusCategory != Done
+   ```
 
-Collect from the list:
-- `id`
-- `from.displayName`
-- `createdDateTime`
-- `body.content` (HTML — parse links and text from it; may be null if deleted)
-- `deletedDateTime` (if present and non-null → deleted, skip)
-- `reactions` (note: will be empty `[]` in list view even if reactions exist — fetch individually to verify)
+   - **Exactly one match** → use it.
+   - **Zero matches** → fall back to the single newest non-Done release story under the epic:
+     ```
+     parent = {JIRA_RELEASES_EPIC} AND statusCategory != Done ORDER BY created DESC
+     ```
+     Take the newest result and **stop to confirm with the user** ("No story matched `Releases {TODAY}`. Newest open release story is `{KEY} — {summary}`. Use this one?") before proceeding. If the fallback also returns nothing, report that no open release story exists under the epic and stop.
+   - **More than one match** → list all matches (`{KEY} — {summary}`) and ask the user which to use before proceeding.
 
-**Immediately after reading the list**, fetch every non-deleted message individually in a single parallel batch using the per-message URI. Do not try to predict which messages need fetching — fetch all of them at once. This gives you complete `reactions` data for all messages before Step 2 begins, with no further individual fetches needed.
+3. Once resolved, report the story up front so the user can confirm the skill picked the right one:
+   `Release story: https://{JIRA_BASE_URL}/browse/{STORY-KEY} — {summary}`
 
-## Step 2 — Find the pending queue
+   Store the resolved key as `{STORY-KEY}` for the rest of the skill.
 
-1. Identify the **last message** that has a reaction with `reactionType: "custom"` — this is the Done (✅DONE) emoji the user adds when a release is complete.
-   - Use the individually-fetched message data from Step 1 (already complete — no additional fetches needed).
-2. All messages **after** that message's `createdDateTime` are candidates.
-3. From those candidates, keep only messages that satisfy **both**:
-   - No `reactionType: "custom"` on the post itself
-   - No reply from the user containing "this release is complete"
-4. From those, **exclude** any message where:
-   - The PR URL targets the `/RUX/` repo (e.g. `github.com/{GITHUB_ORG}/RUX/pull/...`) — another team handles RUX releases
-5. The remaining messages are the **pending release requests**.
+## Step 2 — Extract the linked tickets (the release requests)
 
-Note: SUTS-tagged requests are **no longer excluded**. SUTS detection happens in Step 3.7 and is informational only — used to label the PR in the Step 5 report and Step 6 Jira description. RUX repo is the sole exclusion criterion.
+Fetch the story with `getJiraIssue`:
+- `issueIdOrKey`: `{STORY-KEY}`
+- `fields`: `["summary","status","issuelinks","subtasks","assignee","description","customfield_11462","customfield_11477","customfield_11478","customfield_10028","timetracking"]`
+- `responseContentFormat`: `"markdown"`
 
-If no message with a custom reaction exists, treat all messages as candidates and note this.
+The release requests are every entry in `fields.issuelinks` where:
+- `type.name == "Polaris work item link"` (id 10301), **and**
+- the entry has an `outwardIssue` (these render as "implements" on the story).
 
-## Step 3 — Resolve JIRA ticket + PR for each pending request
+Collect each such `outwardIssue.key` (the child ticket) along with its `fields.summary`, `fields.status.name`, and `fields.priority.name` (already present in the issuelinks payload).
 
-**Speed rule:** As soon as the pending release list is finalized (end of Step 2), fire ALL of the following simultaneously in one parallel batch — do not wait for one check to finish before starting the next:
-- `getJiraIssue` for every pending ticket (Step 3)
-- `gh api graphql` review-thread query for every confirmed PR (Step 3.5)
-- `gh api repos/.../pulls/N/files` migration check for every ST repo PR (Step 3.6)
+- **All linked tickets are in scope regardless of status.** Capture and show each ticket's status in the report, but do **not** exclude a ticket because of its status.
+- **Normalize ticket keys to uppercase.** Tickets may span multiple projects (e.g. `BLI-*` and `BLTE-*`) — handle both.
+- **Empty state:** if there are zero qualifying linked tickets, report `No tickets linked to {STORY-KEY} — nothing to triage.` and stop (do not proceed to PR discovery or Phase 2).
 
-SUTS detection (Step 3.7) reuses the Jira issue summary returned by the Step 3 call — no additional network call is needed. The blackout priority gate (Step 3.8) reuses `fields.priority.name` from the same call. Run both during the same analysis pass after the batch returns.
+Keep the story's field/subtask/description data from this call for Phase 2 — no need to re-fetch it there.
 
-Analyze confidence and assemble the report only after the entire batch has returned.
+## Step 3 — Discover the PR(s) for each linked ticket
 
-Apply this decision tree for each pending message:
+**Speed rule:** As soon as the linked-ticket list is finalized (end of Step 2), fire the per-ticket comment fetches for **all** tickets in one parallel batch. Once PRs are extracted (Step 3.2), fire the PR gates (Steps 3.5 and 3.6) for all discovered PRs in a second parallel batch. SUTS detection (3.7) and the blackout gate (3.8) reuse data already in hand — no extra calls.
 
-### Extract from post body
-- **Jira URL**: Look for `{JIRA_BASE_URL}/browse/TICKET` or `{JIRA_DOMAIN_OLD}/browse/TICKET` (old domain, still valid)
-- **PR URL**: Look for `github.com/{GITHUB_ORG}/*/pull/NNN`
-- **Branch name**: Look for text labeled `Branch:`, `BR:`, or a string matching the pattern `[a-z]+-\d+-[a-z-]+`
-- **Tenant URL**: Look for any URL matching `https://*.munirevs.com[/...]`, `https://*.blt.govos.com[/...]`, or `https://suts.blt.govos.com[/...]`. This is the Smoke-Check URL for the PR in the Step 6 Dependencies list. If no tenant URL is present in the post body:
-  - For SUTS-tagged requests → fall back to `https://suts.blt.govos.com/`
-  - For MRNexus (MT) requests → fall back to the originating tenant from the corresponding Jira ticket if mentioned in a developer comment, otherwise use the first tenant URL seen in any developer comment, otherwise leave as `(MT — production smoke check on default MT site)` and flag in the report
+### Step 3.1 — Fetch ticket comments
 
-### Derive missing pieces
-- If no Jira key found → extract from branch name: the first segment matching `[A-Za-z]+-\d+` (case-insensitive, e.g. `proj-20097` → `PROJ-20097`)
-- If no PR URL found → proceed to Jira comment lookup below
-
-### Jira comment lookup (always do this, even when post provides both)
-Fetch the Jira issue using `getJiraIssue` with `fields: ["summary", "status", "comment", "priority"]` and `responseContentFormat: "markdown"`. Fetch all pending tickets in parallel. The `priority` field (`fields.priority.name`) feeds the blackout gate in Step 3.8 — no extra API call is needed.
+Fetch each linked ticket with `getJiraIssue`, `fields: ["summary","status","comment","priority"]`, `responseContentFormat: "markdown"`. Fetch all tickets in parallel.
 
 **Large response fallback:** If the tool output says `Output too large... saved to: C:/path/to/file.json`, use this Bash command to extract the comments (use forward slashes in the path):
 
@@ -139,6 +123,7 @@ function extractText(items) {
   for (const i of (items||[])) {
     if (i.type==='text') out.push(i.text);
     else if (i.type==='mention') out.push(i.attrs.text);
+    else if (i.type==='inlineCard') out.push(i.attrs.url);
     else if (i.type==='hardBreak') out.push('\n');
     else if (i.content) out.push(...extractText(i.content));
   }
@@ -148,7 +133,7 @@ const comments = issue.fields.comment.comments.slice(-10);
 for (const c of comments) {
   const txt = extractText(c.body && c.body.content || []).join('');
   console.log('['+c.created.substring(0,16)+'] '+c.author.displayName+':');
-  console.log(txt.substring(0,600));
+  console.log(txt.substring(0,800));
   console.log();
 }
 "
@@ -156,23 +141,43 @@ for (const c of comments) {
 
 Note: Python is not available on this machine — always use Node.js (`node -e`) for Bash scripting.
 
-**Markdown response path:** If the tool returns a markdown string directly (no file save), scan only the last 10 comment blocks (search from the bottom of the response) rather than reading the full output.
+**Markdown response path:** If the tool returns a markdown string directly (no file save), scan only the last ~10 comment blocks (search from the bottom of the response) rather than reading the full output.
 
-Scan comments for developer-posted entries that mention a branch name and/or a GitHub PR URL.
+### Step 3.2 — Extract PR URLs from comments
 
-- If multiple PR-mentioning comments exist → use the **newest** one
-- Cross-reference what the developer's comment says vs. what the requester posted:
-  - Branch matches, PR matches → confirms HIGH confidence
-  - Branch matches, PR differs → trust developer's comment, flag discrepancy
-  - Branch mismatches → flag for manual review
-  - No developer comment found → flag for manual lookup
+Scan each ticket's comment bodies for PR URLs matching `github.com/{GITHUB_ORG}/<repo>/pull/<N>`. **PRs appear in two forms in real comments — you must catch both:**
 
-### Multiple tickets on one branch
-If the Jira comments or branch name suggest multiple ticket keys (e.g. the developer mentions a second ticket), list all of them and flag as MULTI-TICKET.
+- **Markdown links:** `[#6899](https://github.com/{GITHUB_ORG}/MRNexus/pull/6899)` — the URL is in the parens (the link text may be `#N`, a repo path, or prose).
+- **Atlassian smartlinks:** `<custom data-type="smartlink" data-id="...">https://github.com/{GITHUB_ORG}/alaska/pull/456</custom>` — the URL is the element's text content.
 
-## Step 3.5 — Check each PR for unresolved review comments
+A robust approach: extract every substring matching the regex `https://github\.com/{GITHUB_ORG}/[A-Za-z0-9._-]+/pull/\d+` from the raw comment text, regardless of surrounding markdown or `<custom>` wrapping, then dedupe.
 
-For every confirmed PR (regardless of confidence level), run the following GraphQL query to detect unresolved review threads. Run all queries in parallel.
+Also capture a `Branch:` / `BR:` value from the same comment when present (for developer follow-up / cross-checking) — but the **PR URL**, not the branch, is the release artifact.
+
+### Step 3.3 — Pick the authoritative PR per ticket
+
+- If multiple **comments** mention PRs → use the PR(s) from the **newest** such comment.
+- If a single comment references **multiple distinct PRs** → list all of them and flag the ticket `MULTI-PR`.
+- If the newest PR-comment and an older one reference **conflicting** PRs for the same repo → trust the newest, flag `LOW` confidence, note the discrepancy.
+
+### Step 3.4 — Derive repo and MT/ST classification
+
+For each discovered PR, parse `<repo>` from `github.com/{GITHUB_ORG}/<repo>/pull/N`:
+- `<repo> == {RELEASE_APP_REPO}` (`MRNexus`) → **MT**.
+- Any other repo → **ST**.
+- `<repo> == RUX` → **excluded** (RUX releases are handled by another team). Do not include RUX PRs in the report body; note at the bottom: `Excluded (RUX — handled by another team): [ticket]`.
+
+### Step 3.5 — No PR found
+
+If no PR URL is discoverable in **any** comment on a ticket:
+- Flag the ticket **NEEDS MANUAL REVIEW** with note `no PR found in ticket comments`.
+- **Exclude** it from the Dependencies/merge PR list.
+- Surface it prominently in the Step 5 report so the user can chase the developer.
+- **Never guess a PR URL** — only report one that was actually found in a comment.
+
+## Step 3.5b — Check each PR for unresolved review comments
+
+For every discovered PR (regardless of confidence level), run the following GraphQL query to detect unresolved review threads. Run all queries in parallel.
 
 ```bash
 gh api graphql -f query='{
@@ -186,7 +191,7 @@ gh api graphql -f query='{
 }'
 ```
 
-Replace `REPO` with the repo name (e.g. `{RELEASE_APP_REPO}`, `[example-repo]`) and `N` with the PR number.
+Replace `REPO` with the repo name (e.g. `{RELEASE_APP_REPO}`, an ST repo) and `N` with the PR number.
 
 - If **any** `isResolved` value is `false` → the PR has unresolved review comments. Mark it as **SEND BACK TO DEVELOPER** in the Step 5 report. Do not release it.
 - If all are `true` (or the array is empty) → no action needed.
@@ -199,7 +204,7 @@ Add a `Review Comments` field to every request block in the Step 5 report:
 
 ## Step 3.6 — Check ST repo PRs for migrations
 
-For every confirmed PR in a **non-`{RELEASE_APP_REPO}` (ST) repo**, check whether the PR contains migration files. Run all checks in parallel.
+For every discovered PR in a **non-`{RELEASE_APP_REPO}` (ST) repo**, check whether the PR contains migration files. Run all checks in parallel.
 
 ```bash
 gh api repos/{GITHUB_ORG}/REPO/pulls/N/files --jq '[.[] | select(.filename | test("migrations/"; "i")) | .filename]'
@@ -207,33 +212,31 @@ gh api repos/{GITHUB_ORG}/REPO/pulls/N/files --jq '[.[] | select(.filename | tes
 
 Replace `REPO` and `N` with the repo name and PR number.
 
-- If the output is a non-empty array → the PR has migrations that must be run manually on the ST tenant. Mark it with `(has migrations — run manually)` in the Step 5 report and in the Step 6 Jira description PR list.
+- If the output is a non-empty array → the PR has migrations that must be run manually on the ST tenant. Mark it with `(has migrations — run manually)` in the Step 5 report.
 - If the output is `[]` → no annotation needed.
 - Skip `{RELEASE_APP_REPO}` PRs — MT migrations are handled automatically during the merge process.
 
+> Note: the migration/SUTS annotations are shown in the **Step 5 report only**. The Step 6 Dependencies bullets are just the PR link (see Step 6).
+
 ## Step 3.7 — Detect SUTS-targeted requests
 
-Flag each pending request as **SUTS-targeted** if any of the following (case-insensitive) contain the substring `suts`:
-- The Jira ticket URL from the post body
-- The tenant URL from the post body (if one is present)
-- The Jira ticket summary returned by the `getJiraIssue` call in Step 3
+Flag each linked ticket as **SUTS-targeted** if any of the following (case-insensitive) contain the substring `suts`:
+- The Jira ticket key/URL
+- Any tenant URL found in the ticket's comments (e.g. `https://*.munirevs.com`, `https://*.blt.govos.com`, `https://suts.blt.govos.com`)
+- The Jira ticket summary returned by the Step 3.1 call
 
-This detection is **informational only** — it never causes a request to be excluded (RUX repo is the sole exclusion criterion, applied in Step 2). It is used to:
-- Append a `_(SUTS)_` tag to the PR line in the Step 5 report
-- Append a ` — SUTS` annotation to the PR entry in the Step 6 Jira description
-
-No additional API call is required — the Jira summary needed for this check is already in the Step 3 response.
+This detection is **informational only** — it never causes a ticket to be excluded (RUX repo is the sole exclusion criterion, applied in Step 3.4). It is used to append a `_(SUTS)_` tag to the PR line in the Step 5 report. No additional API call is required.
 
 ## Step 3.8 — Apply the release blackout priority gate
 
-Using `{IN_BLACKOUT}` (from the Pre-flight blackout computation) and each ticket's `fields.priority.name` (from the Step 3 `getJiraIssue` response — no extra call):
+Using `{IN_BLACKOUT}` (from the Pre-flight blackout computation) and each ticket's `fields.priority.name` (from the Step 2 issuelinks payload / Step 3.1 response — no extra call):
 
-- **If `{IN_BLACKOUT}` is false** → gate is a no-op. Every request is eligible. Still record each request's priority name for the report.
-- **If `{IN_BLACKOUT}` is true** → for each pending request, classify its priority via the eligibility mapping in the Pre-flight section:
-  - **Eligible (P0/P1)** — priority name contains `(p0)` / `(p1)`, or starts with `P1` → request stays in today's release.
-  - **Held (not P0/P1)** — any other priority → mark the request **HELD — release blackout (not P0/P1)**. It is **excluded from today's release**: omit it from the Jira story PR list in Step 6, and do **not** merge it in Phase 3. Surface it prominently in the Step 5 report so the user can tell the requester it's deferred until after the blackout window.
+- **If `{IN_BLACKOUT}` is false** → gate is a no-op. Every ticket is eligible. Still record each ticket's priority name for the report.
+- **If `{IN_BLACKOUT}` is true** → for each linked ticket, classify its priority via the eligibility mapping in the Pre-flight section:
+  - **Eligible (P0/P1)** — priority name contains `(p0)` / `(p1)`, or starts with `P1` → ticket stays in today's release.
+  - **Held (not P0/P1)** — any other priority → mark the ticket **HELD — release blackout (not P0/P1)**. It is **excluded from today's release**: omit it from the Dependencies PR list in Step 6, and do **not** merge it in Phase 3. Surface it prominently in the Step 5 report.
 
-This gate is independent of confidence and review-comment status — a HIGH-confidence, clean-review P2 ticket is still HELD during the blackout. Like the review-comment gate, the user may explicitly override it (e.g. a P2 that leadership has cleared); apply an override only on explicit user direction in the conversation, and note it in the report.
+This gate is independent of confidence and review-comment status — a HIGH-confidence, clean-review P2 ticket is still HELD during the blackout. The user may explicitly override it (e.g. a P2 that leadership has cleared); apply an override only on explicit user direction in the conversation, and note it in the report.
 
 Add a `Priority` field to every request block in the Step 5 report:
 - `✓ {priority name} — eligible` (P0/P1, or any priority outside the blackout window)
@@ -243,27 +246,26 @@ Add a `Priority` field to every request block in the Step 5 report:
 
 | Level | Criteria |
 |---|---|
-| **HIGH** | Requester provided both JIRA + PR, developer comment confirms both match |
-| **MEDIUM** | One piece was missing from the post but found via Jira comments, and cross-checks pass |
-| **LOW** | Mismatch found between requester post and developer comment; or multiple conflicting PRs; or ticket had to be inferred from branch name only |
-| **NEEDS MANUAL REVIEW** | No branch name, no Jira key derivable, or irreconcilable conflict |
+| **HIGH** | A single, unambiguous PR found in a developer comment; cross-checks (branch/PR) consistent |
+| **MEDIUM** | PR found, but the branch/PR cross-check is imperfect, or the PR had to be taken from prose rather than a clearly-labeled "PR:" line |
+| **LOW** | Conflicting PRs across comments (Step 3.3), or `MULTI-PR` (multiple PRs for one ticket that need manual confirmation) |
+| **NEEDS MANUAL REVIEW** | No PR discoverable in any comment (Step 3.5) |
 
 ## Step 5 — Output the report
 
-Present results clearly, one block per pending request, in chronological order (oldest first). Use this format:
+Present results clearly, one block per linked ticket, in the story's link order. Use this format:
 
 ---
 
 **Pending Release Requests — [today's date]**
-**Release blackout window: [start]–[end]** — Today is [inside / outside] the blackout. [If inside: Only P0/P1 requests are eligible; all others are HELD.]
+**Release story: https://{JIRA_BASE_URL}/browse/{STORY-KEY} — {summary}**
+**Release blackout window: [start]–[end]** — Today is [inside / outside] the blackout. [If inside: Only P0/P1 tickets are eligible; all others are HELD.]
 
 ---
 
 **Request 1** *(HIGH confidence — compact format)*
-Requester: [Full name]
-Posted: [time, e.g. 3:04 PM]
-JIRA: [full URL] — [ticket summary from Jira lookup]
-PR: [full GitHub URL] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the request; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`.
+JIRA: [full URL] — [ticket summary] — [status]
+PR: [full GitHub URL] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the ticket; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`.
 Review Comments: [✓ No unresolved comments] OR [⚠ UNRESOLVED COMMENTS — send back to developer]
 Priority: [✓ {priority name} — eligible] OR [⛔ {priority name} — HELD (release blackout, not P0/P1)]
 Confidence: HIGH
@@ -271,14 +273,12 @@ Confidence: HIGH
 ---
 
 **Request 2** *(MEDIUM / LOW / NEEDS MANUAL REVIEW — full format)*
-Requester: [Full name]
-Posted: [time, e.g. 3:04 PM]
-JIRA: [full URL] — [ticket summary from Jira lookup]
-PR: [full GitHub URL] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the request; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`.
-Review Comments: [✓ No unresolved comments] OR [⚠ UNRESOLVED COMMENTS — send back to developer]
+JIRA: [full URL] — [ticket summary] — [status]
+PR: [full GitHub URL(s)] _(SUTS)_ _(has migrations — run manually)_ ← same annotation rules as above. For MULTI-PR, list every PR.
+Review Comments: [✓ No unresolved comments] OR [⚠ UNRESOLVED COMMENTS — send back to developer] OR [— no PR to check]
 Priority: [✓ {priority name} — eligible] OR [⛔ {priority name} — HELD (release blackout, not P0/P1)]
 Confidence: [MEDIUM / LOW / NEEDS MANUAL REVIEW]
-Notes: [brief explanation — what matched, what was derived, any discrepancies]
+Notes: [brief explanation — which comment the PR came from, any discrepancy, why the confidence is below HIGH, or "no PR found in ticket comments"]
 
 ---
 
@@ -288,36 +288,44 @@ Notes: [brief explanation — what matched, what was derived, any discrepancies]
 ---
 
 After the list, include a **Summary** line:
-`X pending requests — Y HIGH, Z MEDIUM, W LOW, V NEEDS MANUAL REVIEW`
+`X linked tickets — Y HIGH, Z MEDIUM, W LOW, V NEEDS MANUAL REVIEW`
 
-If there are any NEEDS MANUAL REVIEW items, list what specific information is missing so the user knows exactly what to look for.
+If there are any NEEDS MANUAL REVIEW items, add a dedicated line listing exactly which tickets have **no discoverable PR** so the user knows which developers to chase:
+`No PR found (chase developer): [ticket] — [summary], [ticket] — [summary]`
 
-If the blackout gate (Step 3.8) HELD any requests, add a **Blackout** line listing them so the user can defer them:
+If the blackout gate (Step 3.8) HELD any tickets, add a **Blackout** line:
 `Held for release blackout ([window]) — not P0/P1: [ticket] ({priority}), [ticket] ({priority})`
-These are excluded from Step 6's story PR list and from Phase 3 merging unless the user explicitly overrides.
+These are excluded from Step 6's Dependencies list and from Phase 3 merging unless the user explicitly overrides.
+
+If a run has **no MT PR** (every discovered PR is ST), note it: `ST-only release — pipeline stops after Phase 3.`
 
 ## Important rules
 
-- Always look up the Jira ticket even when the post appears to have everything — the developer's comment is the source of truth for branch and PR.
-- If the Jira API returns an error for a ticket key, note it rather than skipping the request.
-- Normalize Jira keys to uppercase (e.g. `proj-20097` → `PROJ-20097`).
-- Never guess a PR URL — only report one if it was found in the post or in a Jira comment.
-- Do not include posts from the user that are "this release is complete" replies — only original release request posts.
-- **RUX exclusion**: If a request's PR targets the `{GITHUB_ORG}/RUX` repo, omit it from the report entirely and note at the bottom: `Excluded (RUX — handled by another team): [ticket]`.
-- **SUTS handling**: SUTS-tagged requests (detected in Step 3.7) are **not excluded** — they are included in the report and labeled with `_(SUTS)_` on the PR line. They are also annotated with `— SUTS` in the Step 6 Jira description.
-- **Release blackout**: During the blackout window (4 business days around the 20th — 2 business days before the anchor, the anchor day, and 1 business day after; anchor rolls to the next business day if the 20th is a weekend; computed in Pre-flight), only **P0/P1** requests are eligible — all others are HELD (Step 3.8), excluded from the Step 6 story PR list and from Phase 3 merging unless the user explicitly overrides. Outside the window the gate is a no-op. Always show the computed window and each request's priority in the report.
+- The linked tickets on the story are the source of truth for what to release; a ticket's **newest PR-bearing comment** is the source of truth for its PR.
+- If the Jira API returns an error for a ticket key, note it rather than skipping the ticket.
+- Normalize Jira keys to uppercase.
+- Never guess a PR URL — only report one that was found in a comment.
+- **RUX exclusion**: If a discovered PR targets the `{GITHUB_ORG}/RUX` repo, omit it from the report body and note at the bottom: `Excluded (RUX — handled by another team): [ticket]`.
+- **SUTS handling**: SUTS-tagged tickets (detected in Step 3.7) are **not excluded** — they are included and labeled with `_(SUTS)_` on the PR line.
+- **Release blackout**: During the blackout window (computed in Pre-flight), only **P0/P1** tickets are eligible — all others are HELD (Step 3.8), excluded from the Step 6 Dependencies list and from Phase 3 merging unless the user explicitly overrides. Outside the window the gate is a no-op. Always show the computed window and each ticket's priority in the report.
 
 ---
 
 ## Step 5.5 — Confirmation checkpoint
 
-After outputting the Step 5 report, **stop and wait for the user to confirm** before proceeding to Step 6. Do not create or check for the Jira story until the user explicitly says to continue (e.g. "looks good", "go ahead", "continue"). If they request corrections, apply them and re-present the report before asking again.
+After outputting the Step 5 report, **stop and wait for the user to confirm** before proceeding to Step 6. Do not modify the story until the user explicitly says to continue (e.g. "looks good", "go ahead", "continue"). If they request corrections, apply them and re-present the report before asking again.
 
 ---
 
 ## Step 5.7 — BLT-Eng General channel notification check
 
-Before creating the Jira story, check whether today's start notification has been posted in the BLT-Eng General channel:
+Before writing to the Jira story, check whether today's start notification has been posted in the BLT-Eng General channel. Load the Teams read tool on demand:
+
+```
+ToolSearch("select:mcp__claude_ai_Microsoft_365__read_resource")
+```
+
+Then read:
 
 ```
 teams:///teams/45bde3a3-65a4-4699-8fe8-40fa4317752e/channels/19%3ApFAL1LTrHdyxIuqwtayrJvk1lTLkfDT-_Z9pPbTn5HY1%40thread.tacv2/messages
@@ -339,36 +347,24 @@ Do not proceed to Step 6 until the user confirms.
 
 ---
 
-## Step 6 — Create or verify today's Daily Releases story
+## Step 6 — Verify today's Daily Releases story + write the PR list
 
-After the user confirms the pending release report and the Release Team has been notified, create (or verify) the Jira story that tracks today's release work.
+After the user confirms the report and the Release Team has been notified, verify the release story (`{STORY-KEY}`, already resolved in Step 1) and write the discovered PR list into its Dependencies section.
+
+The story already exists — this step **verifies and populates**, it does not create. (Only create a story if `{STORY-KEY}` somehow no longer resolves; that should not happen in the new flow.)
 
 ### Resolve current user's account ID
 
-Before creating or editing any Jira issue, load `atlassianUserInfo` via ToolSearch and call it to resolve the current user's Atlassian `accountId`. Store the result as `{ACCOUNT_ID}` for all subsequent `editJiraIssue` calls in this phase.
+Before editing any Jira issue, load `atlassianUserInfo` and `editJiraIssue` via ToolSearch and call `atlassianUserInfo` to resolve the current user's Atlassian `accountId`. Store the result as `{ACCOUNT_ID}` for all subsequent `editJiraIssue` calls in this phase.
 
 ```
 ToolSearch("select:mcp__claude_ai_Atlassian__atlassianUserInfo")
+ToolSearch("select:mcp__claude_ai_Atlassian__editJiraIssue")
 ```
-
-### Check for existing story
-Search for a non-closed story matching `summary ~ "Releases YYYY-MM-DD"` under epic `{JIRA_RELEASES_EPIC}` using JQL:
-```
-summary ~ "Releases [TODAY]" AND "Epic Link" = {JIRA_RELEASES_EPIC} AND statusCategory != Done
-```
-- **If found**: use that issue key — skip to "Ensure fields are populated" below.
-- **If not found**: create a new story (see "Create the story" below).
-
-### Create the story
-Use `createJiraIssue` with:
-- `project`: `{JIRA_PROJECT}`
-- `issuetype`: `Story` (id `10000`)
-- `summary`: `Releases YYYY-MM-DD` (today's date)
-- `parent`: `{JIRA_RELEASES_EPIC}`
-- Then proceed to populate all fields via `editJiraIssue` as below.
 
 ### Ensure fields are populated
-Use `editJiraIssue` on the story key. Set any fields that are missing or null:
+
+Using the story data already fetched in Step 2, use `editJiraIssue` on `{STORY-KEY}` to set any fields that are **missing or null** (do not overwrite fields that are already populated):
 
 | Field | Value |
 |---|---|
@@ -378,44 +374,40 @@ Use `editJiraIssue` on the story key. Set any fields that are missing or null:
 | `customfield_11478` (QA Engineer) | `[{"accountId": "{ACCOUNT_ID}"}]` |
 | `customfield_10028` (Story Points) | `2` |
 | `timetracking` | `{"originalEstimate": "2h"}` |
-| `description` | Use the template below (markdown format, `contentFormat: "markdown"`) |
+| `description` | Use the template below (markdown format, `contentFormat: "markdown"`) — always (re)write the description so the Dependencies list reflects the discovered PRs. |
 
 ### Description template
-
-The template below produces a description aligned with the Jira description-grader rubric (target: `good-A`). The grader rejects generic process boilerplate and demands concrete, testable specifics — every section below exists to satisfy one of its rubric items, so do not strip detail in the name of brevity.
 
 Substitute the following placeholders before submitting:
 
 | Placeholder | How to fill it |
 |---|---|
-| `[FULL DATE]` | Formatted date — e.g. `May 20, 2026` |
-| `[ISO DATE]` | Same date in ISO form — e.g. `2026-05-20` |
-| `[RELEASE NARRATIVE]` | One paragraph (2–4 sentences) listing each release item by ticket key and a short value-phrase (e.g. `a batch-edit performance fix (BLTE-20164)`, `a Lyndon, KY XML schema (BLI-2442)`). Use the Jira summaries fetched in Step 3 to derive each value-phrase — paraphrase to one short noun phrase per ticket; do **not** quote the full Jira summary. Close the paragraph with: `Tracking time here feeds release-effort reporting and continuous process improvement.` |
-| `[QA NAME]` | The current user's `displayName` from `atlassianUserInfo` — e.g. `Allen Manning` |
-| `[PR LIST]` | The PR list (see structure below) |
+| `[FULL DATE]` | Formatted release date — e.g. `July 28, 2026` |
+| `[PR LIST]` | The discovered PR list (see structure below) |
+| `[CUTOFF]` | The prior business day and time the story used as its link cutoff — e.g. `3:00 pm Mountain Time on Monday July 27, 2026`. Preserve whatever cutoff the existing story description already states; if none is present, use 3:00 pm Mountain Time on the business day before the release date. |
 
 ```
-This story coordinates the [FULL DATE] production release across Munirevs' multi-tenant (MRNexus) and single-tenant (ST repo) platforms. [RELEASE NARRATIVE]
+This story coordinates the [FULL DATE] production release across Munirevs' multi-tenant (MRNexus) and single-tenant (ST repo) platforms.
+
+### Dependencies
+
+Release PRs:
+
+[PR LIST]
+
+### Scope
+
+**In scope:** Deployment of the PRs listed in Dependencies to production on [FULL DATE].
+
+**Out of scope:** RUX repo releases (handled by a separate team), and any tickets linked after [CUTOFF].
 
 ### Acceptance Criteria
 
 1. **Merge.** Given the PRs in Dependencies are ready, when each is merged to `staging`, then no merge conflicts occur and the resulting `staging` build deploys without error.
-2. **Regression validation.** Given staging regression tests are run, then the run completes with either: (a) all tests passing, (b) all failures matching the pre-documented expected-failure list (production Jira step, SUTS migration step), or (c) any other failure documented by the QA Engineer ([QA NAME]) as a comment on this story containing failure name, root cause hypothesis, and the literal text `Approved to proceed — [QA NAME]` before production deployment begins.
+2. **Regression validation.** Given staging regression tests are run, then the run completes with either: (a) all tests passing, (b) all failures matching the pre-documented expected-failure list (production Jira step, SUTS migration step), or (c) any other failure documented by the QA Engineer (Allen Manning) as a comment on this story containing failure name, root cause hypothesis, and the literal text `Approved to proceed — Allen Manning` before production deployment begins.
 3. **Smoke check.** Given production deployment completes, when smoke checks are run, then each Smoke-Check URL listed in Dependencies returns HTTP 200, the primary navigation renders within 10 seconds, and no new 5xx responses appear in the browser network tab. Pre-existing JS console errors are out of scope.
 4. **Notify requesters.** After production deploy is confirmed, a ✅DONE reaction is added to each original release request post in the Microsoft Teams `Release-Requests-Production` channel (team `BLT-Eng`).
 5. **Time logging.** All time spent on this release is logged to this story or its subtasks with activity descriptions before EOD.
-
-### Scope
-
-**In scope:** Deployment of the PRs listed in Dependencies to production on [FULL DATE]. SUTS-tagged PRs target the Colorado SUTS (Sales & Use Tax System) tenant. MRNexus migrations are applied automatically; ST-repo PRs that contain migrations are annotated inline.
-
-**Out of scope:** Hotfixes raised after staging cutoff, schema migrations not referenced in the listed PRs, RUX repo releases (handled by a separate team), and any change not merged to `staging` before regression testing begins.
-
-### Dependencies
-
-Release PRs (each row lists the PR, Smoke-Check URL, and migration/SUTS notes):
-
-[PR LIST]
 
 ### Definition of Done
 
@@ -428,62 +420,68 @@ Release PRs (each row lists the PR, Smoke-Check URL, and migration/SUTS notes):
 
 ### `[PR LIST]` structure
 
-One bullet per PR. Each bullet must include the PR link, the Smoke-Check URL (from Step 3 tenant-URL extraction), and any SUTS / migration annotations:
+One bullet per PR = **just the PR link** — no Smoke-Check URL, SUTS, or migration annotations in the bullet (those live in the Step 5 report only). Use `[full-url](full-url)` markdown link syntax with the same URL in both positions so Jira renders it clickable:
 
 ```
-* [https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}](https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}) — Smoke-Check URL: {tenant-url} — SUTS — has migrations — run manually
-* [https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}](https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}) — Smoke-Check URL: {tenant-url} — SUTS — MRNexus migration applied automatically
-* [https://github.com/{GITHUB_ORG}/{st-repo-without-migration}/pull/{N}](https://github.com/{GITHUB_ORG}/{st-repo-without-migration}/pull/{N}) — Smoke-Check URL: {tenant-url} — No migration
+* [https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N}](https://github.com/{GITHUB_ORG}/{st-repo}/pull/{N})
+* [https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N}](https://github.com/{GITHUB_ORG}/{RELEASE_APP_REPO}/pull/{N})
 ```
-
-Annotation rules per bullet (compose in this order, separated by ` — `):
-
-1. **PR link** — `[full-url](full-url)` markdown link, same URL in both positions so Jira renders it clickable.
-2. **Smoke-Check URL** — `Smoke-Check URL: {tenant-url-from-step-3}`. Always include — this is what AC #3 tests against.
-3. **SUTS** — append ` — SUTS` if Step 3.7 flagged the request. Omit otherwise.
-4. **Migration annotation** — required on every bullet:
-   - ST repo with migrations detected in Step 3.6 → `has migrations — run manually`
-   - ST repo with no migrations → `No migration`
-   - MRNexus PR (regardless of SUTS) → `MRNexus migration applied automatically`
 
 **PR grouping rule:** List all non-`{RELEASE_APP_REPO}` (ST) PRs first, grouped by repo and sorted alphabetically by repo name. List all `{RELEASE_APP_REPO}` (MT) PRs last. This ordering ensures `/releases-merge` naturally processes ST repos before MT when reading top-to-bottom.
 
-**Important:** Each PR must use `[full-url](full-url)` markdown link syntax with the same URL in both positions so Jira renders it as a clickable link. Example:
-`[https://github.com/{GITHUB_ORG}/[example-repo]/pull/768](https://github.com/{GITHUB_ORG}/[example-repo]/pull/768)`
+**Exclusions:** Omit from the Dependencies list any PR whose ticket is flagged `⚠ UNRESOLVED COMMENTS` (Step 3.5b), HELD by the blackout gate (Step 3.8), or `NEEDS MANUAL REVIEW` (no PR — Step 3.5). These are excluded from Phase 3 merging too, unless the user explicitly overrides.
 
-### Link story to each pending ticket
+### Issue links — no re-linking needed
 
-After `editJiraIssue` completes, create an issue link from the Daily Releases story to **each** pending ticket using `createIssueLink`. Run all link calls in parallel.
+The linked tickets are already linked to the story (that's how Step 2 found them), so **do not** re-create `createIssueLink` links for tickets already present in the story's `issuelinks`. If PR discovery surfaced a ticket that clearly belongs on this release but is **not** linked, note it for the user rather than auto-linking.
 
-For each pending ticket key (e.g. `PROJ-5583`, `PROJ-20094`, etc.):
+## Step 6.5 — Open review tabs in Chrome
 
+After the Jira description has been written (Step 6), launch Chrome tabs so the user can eyeball every linked ticket alongside its PR. This runs on the local Windows machine (Chrome is at `C:\Program Files\Google\Chrome\Application\chrome.exe`, registered in App Paths so `chrome` resolves).
+
+### Build the tab URL list
+
+Order the tabs to match the story's **Dependencies PR list** (Step 6) — the ST-first, then-MRNexus order that `/releases-merge` reads top-to-bottom — not the story's link order. Every tab is an **interleaved pair**: the ticket's Jira URL first, then its PR URL immediately after.
+
+Build the list in two passes:
+
+1. **Dependencies pass (in PR-list order).** Walk the Dependencies PR list top-to-bottom. For each PR, emit its owning ticket's Jira URL, then that PR URL.
+   - `MULTI-PR` ticket → its PRs appear at their respective positions in the Dependencies list; emit the ticket's Jira tab once, immediately before the **first** of its PRs, then each of its PRs in list order.
+2. **Trailing pass (excluded / no-PR tickets).** After the Dependencies pass, append every linked ticket **not** already emitted above — i.e. tickets excluded from the Dependencies list: HELD (blackout, Step 3.8), `⚠ UNRESOLVED COMMENTS` (Step 3.5b), and `NEEDS MANUAL REVIEW` (no PR — Step 3.5). Walk these in Step 5 report (link) order. For each, emit its Jira URL, then its PR URL **if one was discovered** (HELD and unresolved-comment tickets have a PR even though it's excluded from the release — pair it so the user can review it); `NEEDS MANUAL REVIEW` tickets get the Jira tab only.
+
+**URLs:**
+- **Ticket URL:** `https://{JIRA_BASE_URL}/browse/{TICKET-KEY}` (always emitted — one per linked ticket, exactly once).
+- **PR URL(s):** the PR(s) discovered for that ticket in Step 3.
+- **RUX-excluded** PRs (Step 3.4) → open the ticket's Jira tab, but **omit** the RUX PR tab (RUX is another team's; it never gets a release tab).
+
+**Open every linked ticket, including excluded ones** so the user can manually review them. This is intentionally broader than the Step 6 Dependencies list; the releasable set simply comes first (Dependencies order), with excluded tickets trailing. Do **not** filter the tab list by release-eligibility.
+
+> Ordering example — Dependencies list is `[st-repo#10, MRNexus#20, MRNexus#21]` (owned by T2, T1, T4), plus T3 is NEEDS MANUAL REVIEW (no PR) and T5 is HELD (has PR #99):
+> `T2-jira, st-repo#10, T1-jira, MRNexus#20, T4-jira, MRNexus#21,` **then trailing:** `T3-jira (no PR), T5-jira, #99`
+
+### Launch
+
+Reuse the user's current Chrome window (append tabs — do **not** pass `--new-window`). Pass all URLs as arguments in the built order; Chrome opens them as tabs left-to-right in that order. Run via the Bash tool:
+
+```bash
+powershell.exe -NoProfile -Command "Start-Process chrome -ArgumentList @('URL1','URL2','URL3', ...)"
 ```
-createIssueLink({
-  cloudId: "{JIRA_DOMAIN}",
-  type: "Polaris work item link",
-  outwardIssue: "<CHILD-TICKET-KEY>",
-  inwardIssue: "<STORY-KEY>"
-})
-```
 
-- Link type confirmed: `"Polaris work item link"` (id 10301) — outward label = "implements", inward label = "is implemented by"
-- `inwardIssue` = the Daily Releases story (renders as "implements" on the story when viewed)
-- `outwardIssue` = the child ticket being released
-- Note: the API parameter names are counterintuitive — setting the story as `inwardIssue` is what produces the "implements" label on the story's Linked Work Items panel.
+Substitute the ordered URL list for `'URL1','URL2',…` (single-quoted, comma-separated). Keep them in one `Start-Process` call so tab order is deterministic.
 
-## Step 7 — Wait for automation subtasks + description grade
+- If Chrome isn't found / `Start-Process` errors, report the failure and **print the ordered URL list** in the chat so the user can open the tabs manually — do not block the rest of the skill.
+- Report a one-line confirmation, e.g. `Opened N tabs in Chrome ([T] tickets + [P] PRs).`
 
-After the story is created or confirmed, poll for two things simultaneously:
-1. The two automation-created subtasks: **"Coding/Development"** and **"Manual Testing"**
-2. A comment from **"Automation for Jira"** containing a description grade
+## Step 7 — Verify automation subtasks + description grade
 
-Re-fetch the story every ~15 seconds (up to 2 minutes / ~8 polls) using `getJiraIssue` with `fields: ["subtasks", "comment"]`.
+After the description is written, confirm the two automation-created subtasks exist and (optionally) capture the description grade. The subtasks are normally already present on an existing story — the story data from Step 2 already contains `subtasks`.
+
+Check for the two subtasks: **"Coding/Development"** and **"Manual Testing"**. If both are already present (from Step 2), proceed immediately. If either is missing (e.g. a freshly created story), re-fetch the story every ~15 seconds (up to 2 minutes / ~8 polls) using `getJiraIssue` with `fields: ["subtasks","comment"]`.
 
 ### Subtasks
-- Stop polling as soon as both subtasks appear.
-- If 2 minutes elapse without both subtasks: report the story link, state that the automation subtasks have not appeared, and **stop execution** — do not proceed to further steps. Ask the user to confirm once the subtasks are visible before continuing.
+- If 2 minutes elapse without both subtasks: report the story link, state that the automation subtasks have not appeared, and **stop execution**. Ask the user to confirm once the subtasks are visible before continuing.
 
-Once both subtasks are found, immediately perform the following on each:
+Once both subtasks are found, ensure each is configured (set only fields that are missing/null):
 
 **Coding/Development subtask:**
 1. `editJiraIssue` with:
@@ -506,20 +504,21 @@ Once both subtasks are found, immediately perform the following on each:
    - `description`: `"One QA engineer's manual testing effort"` (if not already populated)
    - `customfield_14515` (Capex Task): `{"id": "16504"}` ("Manual Testing") (if not already populated)
 2. Log 1h of work: call `addWorklogToJiraIssue` with `timeSpent: "1h"`
-3. Transition to Closed: use `getTransitionsForJiraIssue` to find the "Closed" transition ID (last observed: `431`), then call `transitionJiraIssue`
+3. Transition to Closed: load `getTransitionsForJiraIssue` and `transitionJiraIssue` via ToolSearch, use `getTransitionsForJiraIssue` to find the "Closed" transition ID (last observed: `431`), then call `transitionJiraIssue`
 
 ### Description grade
-- While polling, scan comments for one authored by a user whose display name contains "Automation for Jira".
-- Extract the grade from the comment body (e.g. `Ticket grade: good-A`).
-- Expected grade: **`good-A`**
+- Scan the story's comments for one authored by a user whose display name contains "Automation for Jira".
+- Extract the grade (e.g. `Ticket grade: good-A`). Expected: **`good-A`**.
 - If the grade is anything other than `good-A`, include it prominently in the final output so the user can review the description.
-- If no grading comment appears within the 2-minute window, note it but do not block on it.
+- If no grading comment appears (the story may have been graded already on an earlier run), note it but do not block on it.
 
 ### Final output
 Always end with the story link regardless of subtask/grade status:
 
 ```
-Story: https://{JIRA_BASE_URL}/browse/[ISSUE-KEY]
+Story: https://{JIRA_BASE_URL}/browse/{STORY-KEY}
+PRs written to Dependencies: [N] ([list ST repos], [MT count])
+Review tabs: [✓ Opened N tabs in Chrome ([T] tickets + [P] PRs)] OR [⚠ Chrome launch failed — URL list printed above]
 Subtasks: [✓ Coding/Development ({JIRA_PROJECT}-XXXXX) + ✓ Manual Testing ({JIRA_PROJECT}-XXXXX)] OR [⚠ Not yet created — check automation]
 Description grade: [✓ good-A] OR [⚠ {actual grade} — review description] OR [— not yet graded]
 ```
