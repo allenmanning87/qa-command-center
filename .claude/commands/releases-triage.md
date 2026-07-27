@@ -435,6 +435,43 @@ One bullet per PR = **just the PR link** — no Smoke-Check URL, SUTS, or migrat
 
 The linked tickets are already linked to the story (that's how Step 2 found them), so **do not** re-create `createIssueLink` links for tickets already present in the story's `issuelinks`. If PR discovery surfaced a ticket that clearly belongs on this release but is **not** linked, note it for the user rather than auto-linking.
 
+## Step 6.5 — Open review tabs in Chrome
+
+After the Jira description has been written (Step 6), launch Chrome tabs so the user can eyeball every linked ticket alongside its PR. This runs on the local Windows machine (Chrome is at `C:\Program Files\Google\Chrome\Application\chrome.exe`, registered in App Paths so `chrome` resolves).
+
+### Build the tab URL list
+
+Order the tabs to match the story's **Dependencies PR list** (Step 6) — the ST-first, then-MRNexus order that `/releases-merge` reads top-to-bottom — not the story's link order. Every tab is an **interleaved pair**: the ticket's Jira URL first, then its PR URL immediately after.
+
+Build the list in two passes:
+
+1. **Dependencies pass (in PR-list order).** Walk the Dependencies PR list top-to-bottom. For each PR, emit its owning ticket's Jira URL, then that PR URL.
+   - `MULTI-PR` ticket → its PRs appear at their respective positions in the Dependencies list; emit the ticket's Jira tab once, immediately before the **first** of its PRs, then each of its PRs in list order.
+2. **Trailing pass (excluded / no-PR tickets).** After the Dependencies pass, append every linked ticket **not** already emitted above — i.e. tickets excluded from the Dependencies list: HELD (blackout, Step 3.8), `⚠ UNRESOLVED COMMENTS` (Step 3.5b), and `NEEDS MANUAL REVIEW` (no PR — Step 3.5). Walk these in Step 5 report (link) order. For each, emit its Jira URL, then its PR URL **if one was discovered** (HELD and unresolved-comment tickets have a PR even though it's excluded from the release — pair it so the user can review it); `NEEDS MANUAL REVIEW` tickets get the Jira tab only.
+
+**URLs:**
+- **Ticket URL:** `https://{JIRA_BASE_URL}/browse/{TICKET-KEY}` (always emitted — one per linked ticket, exactly once).
+- **PR URL(s):** the PR(s) discovered for that ticket in Step 3.
+- **RUX-excluded** PRs (Step 3.4) → open the ticket's Jira tab, but **omit** the RUX PR tab (RUX is another team's; it never gets a release tab).
+
+**Open every linked ticket, including excluded ones** so the user can manually review them. This is intentionally broader than the Step 6 Dependencies list; the releasable set simply comes first (Dependencies order), with excluded tickets trailing. Do **not** filter the tab list by release-eligibility.
+
+> Ordering example — Dependencies list is `[st-repo#10, MRNexus#20, MRNexus#21]` (owned by T2, T1, T4), plus T3 is NEEDS MANUAL REVIEW (no PR) and T5 is HELD (has PR #99):
+> `T2-jira, st-repo#10, T1-jira, MRNexus#20, T4-jira, MRNexus#21,` **then trailing:** `T3-jira (no PR), T5-jira, #99`
+
+### Launch
+
+Reuse the user's current Chrome window (append tabs — do **not** pass `--new-window`). Pass all URLs as arguments in the built order; Chrome opens them as tabs left-to-right in that order. Run via the Bash tool:
+
+```bash
+powershell.exe -NoProfile -Command "Start-Process chrome -ArgumentList @('URL1','URL2','URL3', ...)"
+```
+
+Substitute the ordered URL list for `'URL1','URL2',…` (single-quoted, comma-separated). Keep them in one `Start-Process` call so tab order is deterministic.
+
+- If Chrome isn't found / `Start-Process` errors, report the failure and **print the ordered URL list** in the chat so the user can open the tabs manually — do not block the rest of the skill.
+- Report a one-line confirmation, e.g. `Opened N tabs in Chrome ([T] tickets + [P] PRs).`
+
 ## Step 7 — Verify automation subtasks + description grade
 
 After the description is written, confirm the two automation-created subtasks exist and (optionally) capture the description grade. The subtasks are normally already present on an existing story — the story data from Step 2 already contains `subtasks`.
@@ -481,6 +518,7 @@ Always end with the story link regardless of subtask/grade status:
 ```
 Story: https://{JIRA_BASE_URL}/browse/{STORY-KEY}
 PRs written to Dependencies: [N] ([list ST repos], [MT count])
+Review tabs: [✓ Opened N tabs in Chrome ([T] tickets + [P] PRs)] OR [⚠ Chrome launch failed — URL list printed above]
 Subtasks: [✓ Coding/Development ({JIRA_PROJECT}-XXXXX) + ✓ Manual Testing ({JIRA_PROJECT}-XXXXX)] OR [⚠ Not yet created — check automation]
 Description grade: [✓ good-A] OR [⚠ {actual grade} — review description] OR [— not yet graded]
 ```
