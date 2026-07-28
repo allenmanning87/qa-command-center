@@ -19,7 +19,7 @@ Phase 5 uses a single workflow — **`deploy-production.yml`** in `{GITHUB_ORG}/
 1. **"Deploy to automation site only"** — deploys + migrates the automation sites (`blt1-automation-production` and `colorado-automation-production`, which share a database) and stops. A safe rehearsal.
 2. **"Deploy to full production"** — deploys + migrates the automation sites, runs the **e2e regression suite as a blocking tollgate** against both automation sites (`blt1-automation-production` and `suts-automation-production`), and **only if both e2e gates pass**, deploys + migrates every production site (`nexus8`, `nexus8-api`, `govos-blt-colorado`) together in the same run.
 
-This e2e gate is the **same suite that the retired Phase 4 (`/releases-regression`) used to run** — it now runs here, against the real release tag, on production-grade automation sites, as a hard gate. There is no separate regression phase.
+This e2e gate runs the **same suite as Phase 4 (`/releases-regression`)**, but here it runs against the real release **tag** (on production-grade automation sites) as a hard gate before production sites deploy. Phase 4 runs the same suite earlier, against the `staging` **branch**, before `/fast-forward` — so a regression is caught before staging reaches `main`. The two runs are complementary: Phase 4 guards `main`, this Phase 5 gate guards production. Both must pass in their respective phases.
 
 **The standard path is a single "Deploy to full production" trigger, gated on explicit user go-ahead.** Full-production mode already deploys + migrates the automation sites, runs the e2e gate, and deploys all production sites in one run — so there is no need to run "automation site only" first (doing so would deploy the automation sites twice).
 
