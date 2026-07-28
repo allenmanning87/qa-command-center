@@ -148,13 +148,15 @@ until ! gh pr checks {staging_pr_number} --repo {GITHUB_ORG}/{RELEASE_APP_REPO} 
 - Report all CI results: list any failing checks with their URLs.
 - If the 15-minute timeout is reached with checks still pending: report current status and stop.
 
-**The fast-forward gate is now CI-only.** Phase 4 (`/releases-regression`) has been retired — the same e2e regression suite now runs as a blocking tollgate inside the Phase 5 production deploy (`deploy-production.yml`), so there is no separate regression step to wait on here. Do **not** invoke `/releases-regression`.
+**The fast-forward gate is CI-green + Phase 4 regression.** After the staging PR's CI is green, Phase 4 (`/releases-regression`) must run and pass **before** `/fast-forward`. Phase 4 runs the e2e regression suite against the `staging` branch (via `deploy-production.yml` "Deploy to automation site only", `release-tag=staging`) so regressions are caught before staging is merged into `main`. This is distinct from the Phase 5 e2e gate, which runs against the built release tag *after* fast-forward.
 
-- **If CI is not green:** report the failing checks with URLs so the user can send them to the developer. Do **not** post `/fast-forward`. Stop.
-- **If CI is green:** **do not post the `/fast-forward` comment automatically.** Present a summary and explicitly ask the user: **"CI is green on the staging PR. Ready to post /fast-forward?"** Do not proceed until the user says yes (e.g. "yes", "go ahead", "proceed"). GitHub PR approval status does NOT count as confirmation — the user must explicitly authorize this step in the current conversation.
+- **If CI is not green:** report the failing checks with URLs so the user can send them to the developer. Do **not** run Phase 4 and do **not** post `/fast-forward`. Stop.
+- **If CI is green:** **do not post the `/fast-forward` comment automatically, and do not ask for `/fast-forward` go-ahead yet.** Hand off to Phase 4: invoke the `/releases-regression` skill. Phase 4 triggers the regression run, polls it to completion, and gates `/fast-forward` on the entire run concluding `success`.
+  - **Phase 4 fails** → `/fast-forward` is blocked. Report the failing jobs/steps with the run URL. Stop.
+  - **Phase 4 passes** → Phase 4 presents the `/fast-forward` go-ahead prompt (staging CI green + regression green) and waits for the user's explicit authorization before control returns here at step 4e. GitHub PR approval status does NOT count as confirmation — the user must explicitly authorize in the current conversation.
 
 ### 4e — Trigger fast-forward merge
-Only after the user explicitly says to proceed:
+Only after Phase 4 has passed **and** the user has explicitly authorized `/fast-forward` (via the Phase 4 Step 4 prompt):
 ```
 MSYS_NO_PATHCONV=1 gh pr comment {staging_pr_number} --repo {GITHUB_ORG}/{RELEASE_APP_REPO} --body "/fast-forward"
 ```
@@ -178,7 +180,7 @@ gh release list --repo {GITHUB_ORG}/{RELEASE_APP_REPO} --limit 1 --json tagName,
 - If 5 minutes elapse without a new tag, report and stop — the automation may still be running.
 
 ### 4h — Proceed to Phase 5
-After the release tag is confirmed (or the 5-minute timeout is reached), output the Step 5 final report and then invoke the `/releases-deploy` skill. Note that `/releases-deploy` now drives the new `deploy-production.yml` workflow (which runs the e2e regression suite as a built-in blocking gate) and has its own explicit go-ahead gate before the full-production deploy.
+After the release tag is confirmed (or the 5-minute timeout is reached), output the Step 5 final report and then invoke the `/releases-deploy` skill. Note that `/releases-deploy` drives the `deploy-production.yml` workflow in full-production mode (which runs its own e2e regression gate against the built release tag) and has its own explicit go-ahead gate before the full-production deploy. This is a second e2e run against the real tag — separate from the Phase 4 run against the `staging` branch.
 
 ---
 
@@ -197,6 +199,7 @@ MT Release:
 ✓ {RELEASE_APP_REPO} PRs merged into staging: #{N} ({JIRA}), #{N} ({JIRA}), ...
 ✓ Staging → Main PR: {URL}
 CI: [✓ all checks green] OR [⚠ failing: {check name} — {url}] OR [⏳ still running — check manually]
+Phase 4 regression: [→ handing off to /releases-regression] OR [✓ passed — {run_url}] OR [⚠ failed — {run_url}] OR [pending CI green]
 
 Flagged / Skipped:
 ⚠ {repo} PR #{N} ({JIRA}) — {reason}
