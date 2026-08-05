@@ -136,6 +136,18 @@ Title format: list every Jira ticket key from today's MT PRs, space-separated, t
 
 Report the new PR URL.
 
+### 4c-i — Open the staging → main PR in Chrome
+
+Immediately after the release PR is created, open it in the user's current Chrome window so they can watch CI live — mirroring the review-tab behavior in `/releases-triage`. Reuse the current window (append a tab — do **not** pass `--new-window`):
+
+```bash
+powershell.exe -NoProfile -Command "Start-Process chrome -ArgumentList @('{staging_pr_url}')"
+```
+
+- Substitute `{staging_pr_url}` with the URL returned in step 4c.
+- If Chrome isn't found / `Start-Process` errors, report the failure and print the PR URL in chat so the user can open it manually — do not block the rest of the skill.
+- Report a one-line confirmation, e.g. `Opened staging → main PR in Chrome.`
+
 ### 4d — Poll CI checks on the staging PR, then gate on explicit go-ahead
 
 Poll the staging → main PR's CI checks to completion in a background task:
