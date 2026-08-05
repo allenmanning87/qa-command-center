@@ -389,6 +389,8 @@ Substitute the following placeholders before submitting:
 ```
 This story coordinates the [FULL DATE] production release across Munirevs' multi-tenant (MRNexus) and single-tenant (ST repo) platforms.
 
+Release process reference: [BLT Release Process (Weekly + Daily)](https://neumo.atlassian.net/wiki/spaces/BBLAT/pages/4026630147/BLT+Release+Process+Weekly+Daily)
+
 ### Dependencies
 
 Release PRs:
