@@ -14,10 +14,11 @@ You are executing **Phase 1** (Jira-story triage) and **Phase 2** (Jira story ve
 
 - **Phase 1** = Steps 1–5: Resolve today's release story, read its linked tickets, discover the PR(s) for each ticket from its Jira comments, run the PR gates, output the triage report, and wait for you to confirm.
 - **Phase 2** = Steps 6–7: Verify today's Daily Releases Jira story's fields and subtasks, and write the discovered PR list into the story's Dependencies section.
-- **Phase 3** = `/releases-merge` skill (merge PRs, create release tags; gate on staging-PR CI + explicit go-ahead for `/fast-forward`)
-- **Phase 5** = `/releases-deploy` skill (production deploy via `deploy-production.yml`, which runs the e2e regression suite as a built-in blocking tollgate)
+- **Phase 3** = `/releases-merge` skill (merge PRs, create release tags; gate on staging-PR CI, then Phase 4, then explicit go-ahead for `/fast-forward`)
+- **Phase 4** = `/releases-regression` skill (e2e regression suite against the `staging` **branch**, via `deploy-production.yml` "Deploy to automation sites only" with `release-tag=staging`) — must pass **before** `/fast-forward`, so regressions are caught before staging reaches `main`
+- **Phase 5** = `/releases-deploy` skill (production deploy via `deploy-production.yml`, which runs the same e2e suite against the built release **tag** as a built-in blocking tollgate)
 
-> **Phase 4 retired:** the standalone `/releases-regression` step no longer exists — its e2e suite now runs as a blocking gate inside the Phase 5 deploy workflow.
+> **Phase 4 is live.** It was briefly retired on the assumption that the Phase 5 e2e gate was sufficient, but that gate runs against the release *tag* only *after* `/fast-forward` has already merged staging into `main`. Phase 4 runs the same suite against the `staging` branch first, so a bad build never gets fast-forwarded. The two gates are complementary: **Phase 4 guards `main`, Phase 5 guards production.** Both must pass in their respective phases.
 
 > **Source of truth changed:** release requests are no longer read from the `Release-Requests-Production` Teams channel. They are now the tickets **linked** to that day's release story under `{JIRA_RELEASES_EPIC}`. Because requesters no longer post PRs, triage **discovers each ticket's PR(s) by scanning that ticket's Jira comments**.
 
