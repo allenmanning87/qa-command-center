@@ -16,7 +16,9 @@ Phase 4 runs **after** Phase 3's staging→main PR CI is green and **before** th
 
 > **Why this exists again:** Phase 4 was previously retired on the assumption that the e2e suite inside `deploy-production.yml` (Phase 5) was sufficient. It is not — that gate runs against the built release *tag*, after `/fast-forward` has already merged staging into `main`. Running the same e2e suite against the `staging` **branch first** catches regressions before they land on `main`, so a bad staging build never gets fast-forwarded. Phase 5 still runs its own e2e gate against the real tag; the two are complementary, not redundant.
 
-> **Prerequisite — requires ltc-deployment PR #62 (BLTE-23564) merged.** This skill triggers `deploy-production.yml`'s **"Deploy to automation sites only"** mode and requires it to run the e2e suite. That behavior ships in PR #62, which also **renames** the input from the singular `"Deploy to automation site only"` to the plural **`"Deploy to automation sites only"`** and removes the `if` guard so e2e runs in this mode. Until #62 is merged, this mode **skips e2e** and the plural string does not exist — so **do not use this skill before #62 merges**. Interim fallback (pre-#62): trigger `e2e-tests-single-site.yml` in `{RELEASE_APP_REPO}` with `tenant` = `RELEASE_MT_TENANT` and `tenantSiteUrl` = `RELEASE_MT_TENANT_URL`, after separately deploying `staging` to that tenant.
+> **Prerequisite — satisfied.** This skill triggers `deploy-production.yml`'s **"Deploy to automation sites only"** mode and depends on that mode running the e2e suite. That behavior shipped in ltc-deployment PR #62 (BLTE-23564), **merged 2026-07-28**, which renamed the input to the plural `"Deploy to automation sites only"` and removed the `if` guard that previously skipped e2e in this mode. Nothing further is needed — the plural string is the current input value, and e2e runs.
+>
+> Still verify the e2e jobs actually **ran** (not `skipped`) when evaluating the gate in Step 3 — a green `deploy-automation` with skipped e2e is not a pass.
 
 ## Inputs
 
@@ -108,7 +110,7 @@ If any job failed, include the failing job and step names so the user can invest
 ## Important Rules
 
 - Phase 4 runs against the **`staging` branch** (`release-tag=staging`), before any tag exists and before `/fast-forward`.
-- Requires ltc-deployment PR #62 (BLTE-23564) merged: the trigger uses the **plural** `"Deploy to automation sites only"` string and depends on that mode running e2e. Before #62, use the interim `e2e-tests-single-site.yml` fallback (see pre-flight note).
+- The trigger uses the **plural** `"Deploy to automation sites only"` string — the current workflow input. (Renamed from the singular by ltc-deployment PR #62 / BLTE-23564, merged 2026-07-28; the singular no longer exists and will fail the `choice` input validation.)
 - The entire workflow run must conclude `success` **and** the e2e jobs must have actually run (not skipped) — a green `deploy-automation` with skipped e2e is **not** a pass. No expected-failure allowance in this phase.
 - Phase 4 passing does **not** authorize `/fast-forward` — the user must still explicitly authorize it (Step 4).
 - Never bypass or re-trigger past a failed regression without explicit user direction.

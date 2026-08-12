@@ -16,19 +16,19 @@ You are executing **Phase 5** of the daily release process: deploying today's re
 
 Phase 5 uses a single workflow — **`deploy-production.yml`** in `{GITHUB_ORG}/{RELEASE_DEPLOY_REPO}` — which has two modes:
 
-1. **"Deploy to automation site only"** — deploys + migrates the automation sites (`blt1-automation-production` and `colorado-automation-production`, which share a database) and stops. A safe rehearsal.
+1. **"Deploy to automation sites only"** — deploys + migrates the automation sites (`blt1-automation-production` and `colorado-automation-production`, which share a database), runs the e2e suite against them, and stops. A safe rehearsal; this is also the mode Phase 4 (`/releases-regression`) uses against the `staging` branch.
 2. **"Deploy to full production"** — deploys + migrates the automation sites, runs the **e2e regression suite as a blocking tollgate** against both automation sites (`blt1-automation-production` and `suts-automation-production`), and **only if both e2e gates pass**, deploys + migrates every production site (`nexus8`, `nexus8-api`, `govos-blt-colorado`) together in the same run.
 
 This e2e gate runs the **same suite as Phase 4 (`/releases-regression`)**, but here it runs against the real release **tag** (on production-grade automation sites) as a hard gate before production sites deploy. Phase 4 runs the same suite earlier, against the `staging` **branch**, before `/fast-forward` — so a regression is caught before staging reaches `main`. The two runs are complementary: Phase 4 guards `main`, this Phase 5 gate guards production. Both must pass in their respective phases.
 
-**The standard path is a single "Deploy to full production" trigger, gated on explicit user go-ahead.** Full-production mode already deploys + migrates the automation sites, runs the e2e gate, and deploys all production sites in one run — so there is no need to run "automation site only" first (doing so would deploy the automation sites twice).
+**The standard path is a single "Deploy to full production" trigger, gated on explicit user go-ahead.** Full-production mode already deploys + migrates the automation sites, runs the e2e gate, and deploys all production sites in one run — so there is no need to run "automation sites only" first (doing so would deploy the automation sites twice).
 
 ```
 ⛔ STOP — ask the user for explicit go-ahead
 "Deploy to full production"  → automation deploy → e2e gate → all prod sites (one run)
 ```
 
-"Deploy to automation site only" remains available as an **optional manual rehearsal** (e.g. to validate a tag on the automation sites before committing to production), but it is **not** part of the standard flow — skip it unless the user explicitly asks for it. See the appendix at the end of this skill.
+"Deploy to automation sites only" remains available as an **optional manual rehearsal** (e.g. to validate a tag on the automation sites before committing to production), but it is **not** part of the standard flow — skip it unless the user explicitly asks for it. See the appendix at the end of this skill.
 
 > **Access note:** the workflow enforces an allowlist (`DEPLOY_TO_PRODUCTION_ALLOW`) against the GitHub user who triggers it. If the trigger fails on "Perform access control", the triggering account is not on the allowlist — report it and stop.
 
@@ -169,7 +169,7 @@ If any job failed, include the failing job and step names so the user can invest
 
 ## Important Rules
 
-- The standard flow is a single "Deploy to full production" trigger, gated on explicit user go-ahead obtained **before** triggering. Never trigger full production without that go-ahead. Do not run "automation site only" as a pre-step unless the user explicitly asks (it would deploy the automation sites twice).
+- The standard flow is a single "Deploy to full production" trigger, gated on explicit user go-ahead obtained **before** triggering. Never trigger full production without that go-ahead. Do not run "automation sites only" as a pre-step unless the user explicitly asks (it would deploy the automation sites twice).
 - After the full-production deploy succeeds, always run Step 3 (MT staging deploy via `legacy-deploy-blt-mt.yml`) for `{RELEASE_BLT1_AUTOMATION_STAGING}` only. `deploy-production.yml` now covers staging `nexus8` (and qa `munirevs-mrnexus`) via its built-in jobs, so **do not** legacy-deploy `nexus8` — but `{RELEASE_BLT1_AUTOMATION_STAGING}` is still not covered, so skipping Step 3 would leave that staging mirror behind production.
 - The e2e tollgate inside the workflow is the release's regression check — never bypass it or override a failed gate without explicit user direction.
 - Treat any failed job or step in the `deploy-production.yml` run (Steps 1–2) as a real failure — that workflow has no known-expected failures. The only expected failure in Phase 5 is the Step 3 `Run database migrations` step on `{RELEASE_BLT1_AUTOMATION_STAGING}`.
@@ -177,14 +177,16 @@ If any job failed, include the failing job and step names so the user can invest
 
 ---
 
-## Appendix — Optional: "Deploy to automation site only" rehearsal
+## Appendix — Optional: "Deploy to automation sites only" rehearsal
 
-Not part of the standard flow. Use only if the user explicitly wants to validate the tag on the automation sites before committing to production. It deploys + migrates `blt1-automation-production` and `colorado-automation-production`, then stops (no e2e gate, no production deploy).
+Not part of the standard flow. Use only if the user explicitly wants to validate the tag on the automation sites before committing to production. It deploys + migrates `blt1-automation-production` and `colorado-automation-production`, runs the e2e suite against them, then stops (no production deploy).
+
+> This is the same mode Phase 4 (`/releases-regression`) uses — Phase 4 points it at the `staging` branch, whereas this rehearsal points it at a release tag. Since ltc-deployment PR #62 (BLTE-23564), this mode **does** run e2e (earlier docs said it did not).
 
 ```bash
 gh workflow run deploy-production.yml \
   --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} \
-  --field deploy-target="Deploy to automation site only" \
+  --field deploy-target="Deploy to automation sites only" \
   --field release-tag={release_tag}
 ```
 

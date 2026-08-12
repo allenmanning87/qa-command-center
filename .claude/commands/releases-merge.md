@@ -160,7 +160,7 @@ until ! gh pr checks {staging_pr_number} --repo {GITHUB_ORG}/{RELEASE_APP_REPO} 
 - Report all CI results: list any failing checks with their URLs.
 - If the 15-minute timeout is reached with checks still pending: report current status and stop.
 
-**The fast-forward gate is CI-green + Phase 4 regression.** After the staging PR's CI is green, Phase 4 (`/releases-regression`) must run and pass **before** `/fast-forward`. Phase 4 runs the e2e regression suite against the `staging` branch (via `deploy-production.yml` "Deploy to automation site only", `release-tag=staging`) so regressions are caught before staging is merged into `main`. This is distinct from the Phase 5 e2e gate, which runs against the built release tag *after* fast-forward.
+**The fast-forward gate is CI-green + Phase 4 regression.** After the staging PR's CI is green, Phase 4 (`/releases-regression`) must run and pass **before** `/fast-forward`. Phase 4 runs the e2e regression suite against the `staging` branch (via `deploy-production.yml` "Deploy to automation sites only", `release-tag=staging`) so regressions are caught before staging is merged into `main`. This is distinct from the Phase 5 e2e gate, which runs against the built release tag *after* fast-forward.
 
 - **If CI is not green:** report the failing checks with URLs so the user can send them to the developer. Do **not** run Phase 4 and do **not** post `/fast-forward`. Stop.
 - **If CI is green:** **do not post the `/fast-forward` comment automatically, and do not ask for `/fast-forward` go-ahead yet.** Hand off to Phase 4: invoke the `/releases-regression` skill. Phase 4 triggers the regression run, polls it to completion, and gates `/fast-forward` on the entire run concluding `success`.
