@@ -196,9 +196,24 @@ Skip this step entirely when there is no RUX tag today.
 
 The Step 1 authorization covered the **MT** deploy only. Ask separately: **"Ready to deploy RUX `{rux_tag}` to production?"** Wait for an explicit yes in the current conversation. A go-ahead for MT is never a go-ahead for RUX.
 
-### 4b — Confirm the release artifact exists
+### 4b — REQUIRED: confirm "Release and archive" has completed
 
-`/fast-forward` publishes the built RUX bundle to S3; the deploy downloads it by tag. If the artifact isn't there yet the run fails with "no artifact" — that means the build hasn't finished publishing, **not** that the tag is wrong. Wait and retry; never re-cut the tag.
+**RUX must be built before it can be deployed** — unlike MRNexus (PHP, checked out directly on the server), RUX is React/TypeScript and ships as a prebuilt bundle. The `/fast-forward` triggers `on-push-default-branch.yml` in `{GITHUB_ORG}/RUX` (*"Release and archive"*), whose `Build application` → `Archive build artifact` jobs produce and upload `s3://govos-infrastructure-artifacts-l/RUX/releases/{tag}.tar.gz`. **That is the artifact this deploy downloads.**
+
+Verify the run for this tag concluded `success` before triggering the deploy:
+
+```bash
+RUN=$(gh run list --repo {GITHUB_ORG}/RUX --workflow on-push-default-branch.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run view $RUN --repo {GITHUB_ORG}/RUX --json status,conclusion,jobs \
+  --jq '.status + " / " + (.conclusion // "-"), (.jobs[] | "  " + .name + " -> " + (.conclusion // .status))'
+```
+
+- Still `in_progress` → **wait.** Typical duration ~3 minutes.
+- `success` → the artifact is published; proceed.
+- Failed at `Build application` or `Archive build artifact` → **there is no artifact and the deploy cannot work.** Report and stop; the tag exists but is not deployable.
+- Failed only at `add-jira-fix-version` → the artifact still published, so the deploy can proceed; note that Fix Versions need setting manually.
+
+If the deploy is triggered too early it fails with "no artifact for branch/tag". That is a **timing** problem, not a bad tag — wait for the archive job and retry. **Never re-cut the tag.**
 
 ### 4c — Trigger the deploy
 
@@ -242,7 +257,15 @@ gh run view {run_id} --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} --json jobs --jq 
 
 ### 4e — Confirm Fix Versions in Jira
 
-On success, each ticket in the RUX release should show the new version in its **Fix Version** field, set by the workflow's Jira step. Spot-check one ticket. If the Jira step failed (above), set the fix version manually.
+On success, each ticket in the RUX release should show the new version in its **Fix Version** field — set by the `add-jira-fix-version` job in "Release and archive" (Step 4b), not by the deploy. That job parses ticket keys from the `staging` → `main` PR title, so a ticket missing from that title gets no Fix Version. Spot-check one ticket; set any missing ones manually.
+
+### 4f — Smoke check the new UI
+
+**There is no e2e gate on the RUX deploy** — unlike the MT deploy, `deploy-rux.yml` runs no test suite. Arturo Rios (training call part 2, 2026-08-25) explained why: RUX enforces unit tests and lint through a **pre-push git hook**, so problems are caught before a PR is ever opened rather than at deploy time.
+
+That makes the post-deploy check manual and worth doing every time. Open a new-UI business center URL, confirm it loads and you can log in, and watch for console errors. Report what you checked.
+
+The deploy itself is fast (a symlink swap over a prebuilt bundle) — seconds, not minutes.
 
 ---
 
@@ -272,9 +295,12 @@ MT ({RELEASE_APP_REPO}) — release tag: {tag}
 ✓ MT staging deploy ({RELEASE_BLT1_AUTOMATION_STAGING} @ staging) — {conclusion} — {run_url}
 
 RUX — release tag: {rux_tag}
+✓ Release and archive (RUX on-push-default-branch.yml) — {conclusion} — {run_url}
+    semantic-release / add-jira-fix-version / Build application / Archive build artifact
 ✓ RUX production deploy — {conclusion} — {run_url}
     artifact: s3://govos-infrastructure-artifacts-l/RUX/releases/{rux_tag}.tar.gz
     Jira fix versions: [✓ set] OR [⚠ step failed — set manually (deploy still succeeded)]
+    smoke check: [✓ new UI loads + login OK] OR [⚠ {what you saw}]
 ```
 
 Omit a track's section entirely if it had no tag today. If any job failed, include the failing job and step names so the user can investigate.
@@ -305,6 +331,8 @@ Do not transition released tickets to Closed as part of Phase 5. Flag it if the 
 - Never re-trigger a workflow while a production run is already in progress (production deploys share a single WireGuard peer and must not overlap).
 - **Authorize each track separately.** Explicit go-ahead for the MT deploy does not authorize the RUX deploy, and vice versa. Ask per track, naming the repo and tag.
 - A red X on a RUX deploy is not automatically a failed deploy — check *which* step failed before reporting. The Jira-version step failing means the site is live and must not be redeployed.
+- **RUX must finish "Release and archive" before it can be deployed.** RUX is React/TypeScript and ships a prebuilt bundle; the `/fast-forward` build produces the S3 artifact the deploy downloads. MRNexus (PHP) has no such step. Triggering the RUX deploy early fails with "no artifact" — wait (~3 min), never re-cut the tag.
+- **The RUX deploy runs no e2e suite.** RUX enforces unit tests and lint via a pre-push git hook instead, so verification is a manual smoke check of the new UI after deploy. Do not report a RUX deploy as regression-verified.
 
 ---
 

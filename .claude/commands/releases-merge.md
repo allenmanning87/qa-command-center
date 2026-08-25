@@ -212,6 +212,8 @@ MSYS_NO_PATHCONV=1 gh pr comment {staging_pr_number} --repo {GITHUB_ORG}/{APP_RE
 
 **Authorize each track separately.** A go-ahead for the MT fast-forward is **not** a go-ahead for RUX. Ask for each one explicitly, naming the repo, and post only the comment the user authorized.
 
+> **RUX needs one approving review on the release PR** before `/fast-forward`. Arturo Rios requests it from Osvaldo, Sebastian, or Israel. One approval is the norm — check `reviewDecision` is `APPROVED` before posting.
+
 Separate authorization does not mean separate timing: once both are authorized, **both `/fast-forward` comments may be posted at the same time.** Nothing about fast-forward contends between the repos — they merge and tag independently.
 
 ### 4f — Poll for PR merge confirmation
@@ -233,7 +235,35 @@ gh release list --repo {GITHUB_ORG}/{APP_REPO} --limit 1 --json tagName,createdA
 
 > Tag series differ per repo and must not be conflated: `{RELEASE_APP_REPO}` runs `v1.x.y` (e.g. `v1.256.0`), `RUX` runs `v22.x.y` (e.g. `v22.11.3`). Always read each repo's own latest tag — never infer one from the other.
 
-> **RUX artifact.** The `/fast-forward` automation also publishes the built RUX release artifact to S3 at `s3://govos-infrastructure-artifacts-l/RUX/releases/{tag}.tar.gz`. Phase 5's RUX deploy downloads that artifact by tag, so if the deploy reports a missing artifact, the tag exists but its build has not finished publishing yet — wait and retry rather than re-cutting the tag.
+### 4g-i — RUX only: wait for "Release and archive" to finish
+
+**This step has no MT equivalent and is a hard gate on Phase 5.** MRNexus is PHP — the server just checks out the code, so no build is needed. RUX is React/TypeScript/Vite and **must be built** before anything is deployable.
+
+The RUX `/fast-forward` triggers `on-push-default-branch.yml` (*"Release and archive - Triggered by fast-forward merge to default branch"*) in `{GITHUB_ORG}/RUX`. It runs four jobs:
+
+| Job | What it does |
+|---|---|
+| `semantic-release` | Cuts the `v22.x.y` tag |
+| `add-jira-fix-version` | Creates the Jira release and stamps **Fix Version** on every ticket in the PR title |
+| `Build application` | `npm install` → **Node Build** → compress `.tar.gz` |
+| `Archive build artifact` | `aws s3 cp v{tag}.tar.gz s3://govos-infrastructure-artifacts-l/RUX/releases/` |
+
+**That final S3 upload is the artifact `deploy-rux.yml` downloads.** Until it completes, the deploy will fail with "no artifact" — the tag will already exist, which makes it look like a tagging problem when it is really a timing one.
+
+Poll it to completion before handing off to Phase 5:
+
+```bash
+RUN=$(gh run list --repo {GITHUB_ORG}/RUX --workflow on-push-default-branch.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+until [ "$(gh run view $RUN --repo {GITHUB_ORG}/RUX --json status --jq '.status')" = "completed" ]; do sleep 20; done
+gh run view $RUN --repo {GITHUB_ORG}/RUX --json status,conclusion --jq '.status + " / " + .conclusion'
+```
+
+Typical duration is ~3 minutes (observed 2m46s for `v22.12.0`). Report `✓ RUX build + archive complete — artifact published for {tag}`.
+
+- If the run **fails**, there is no artifact and Phase 5 cannot proceed. Report the failing job and stop.
+- If `add-jira-fix-version` failed but the build and archive succeeded, the deploy can still run — the Fix Versions just need setting manually.
+
+> **Consequence for the release PR title:** `add-jira-fix-version` parses the ticket keys out of the `staging` → `main` PR title. Any ticket shipping in the release but missing from that title gets **no Fix Version**, and a duplicated or wrong key stamps the wrong thing. Get the title right before `/fast-forward` — it cannot be fixed afterward by editing the PR.
 
 ### 4h — Proceed to Phase 5
 After the release tag is confirmed (or the 5-minute timeout is reached) **for every track that ran**, output the Step 5 final report and then invoke the `/releases-deploy` skill, passing each tag that was created. `/releases-deploy` handles the MT tag via `deploy-production.yml` and the RUX tag via `deploy-rux.yml`; each has its own explicit go-ahead gate.
