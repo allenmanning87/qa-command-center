@@ -20,11 +20,13 @@ You are executing **Phase 5** of the daily release process: deploying today's re
 | 2 | **MT** (`{RELEASE_APP_REPO}`) | This skill, Steps 1–3 | `deploy-production.yml` | `v1.x.y` |
 | 3 | **RUX** | This skill, Step 4 | `deploy-rux.yml` | `v22.x.y` |
 
-Run only the track(s) that produced a tag in Phase 3, and always in this order.
+Run only the track(s) that produced a tag in Phase 3.
 
-**ST deploys are the user's to run manually.** This skill does not trigger them. Before starting the MT deploy, confirm with the user that any ST deploys and their manual migrations are done — an ST migration that lands after the MT deploy can leave the two out of step. Do not assume; ask.
+**ST deploys are the user's to run manually, and are NOT a blocker for MT or RUX.** This skill does not trigger them and must not wait on them. ST repos deploy independently of the app repos — do not ask the user to confirm ST is finished before starting MT or RUX, and never hold an app-repo deploy on ST state. The "1" in the table is the customary order, not a dependency.
 
-**MT before RUX.** MT carries the database migrations and the e2e tollgate, so blockers surface there first; RUX is a fast static-bundle swap. Deploying RUX first would put new front-end code in front of a backend that hasn't shipped yet — on RUX sites the business center (RUX) and `/backend/admin/` (`{RELEASE_APP_REPO}`) are two halves of the same site, so front-end-first can briefly break a paired fix.
+**MT before RUX** — this one *is* a real ordering constraint, for two reasons:
+- **Hard:** the two workflows share a WireGuard peer and cannot overlap (see below).
+- **Soft:** MT carries the database migrations and the e2e tollgate, so blockers surface there first, and on RUX sites the business center (RUX) and `/backend/admin/` (`{RELEASE_APP_REPO}`) are two halves of one site — shipping the front end ahead of its backend can briefly break a paired fix.
 
 ---
 
@@ -293,7 +295,7 @@ Do not transition released tickets to Closed as part of Phase 5. Flag it if the 
 
 ## Important Rules
 
-- **Deploy order is ST → MT → RUX**, strictly sequential. ST is run manually by the user outside this skill — confirm it's done (including its manual migrations) before starting MT. Never start RUX until the MT deploy has reached a terminal conclusion.
+- **Deploy order is ST → MT → RUX.** Only the MT → RUX leg is a hard constraint (shared WireGuard peer) — never start RUX until the MT deploy has reached a terminal conclusion. **ST is not a blocker for either app repo**: it is run manually by the user, deploys independently, and must never be waited on or confirmed before triggering MT or RUX.
 - The standard flow is a single "Deploy to full production" trigger, gated on explicit user go-ahead obtained **before** triggering. Never trigger full production without that go-ahead. Do not run "automation sites only" as a pre-step unless the user explicitly asks (it would deploy the automation sites twice).
 - After the full-production deploy succeeds, always run Step 3 (MT staging deploy via `legacy-deploy-blt-mt.yml`) for `{RELEASE_BLT1_AUTOMATION_STAGING}` only. `deploy-production.yml` now covers staging `nexus8` (and qa `munirevs-mrnexus`) via its built-in jobs, so **do not** legacy-deploy `nexus8` — but `{RELEASE_BLT1_AUTOMATION_STAGING}` is still not covered, so skipping Step 3 would leave that staging mirror behind production.
 - The e2e tollgate inside the workflow is the release's regression check — never bypass it or override a failed gate without explicit user direction.
