@@ -40,7 +40,7 @@ If invoked from `/releases-merge`, the staging→main PR number and its green-CI
 
 **Both `/fast-forward` gates must be satisfied independently.** A green MT regression never authorizes the RUX fast-forward, and vice versa. Run the gate for each track that has a release in flight, and ask for each authorization separately.
 
-> **Both tracks' Phase 4 gates may run concurrently.** There is no ordering requirement here — kick off the MT regression and the RUX build → staging deploy → e2e in parallel to save wall-clock. The strict ST → MT → RUX serialization applies only to the **production** deploys in Phase 5 (`/releases-deploy`), where the two workflows contend for the shared production WireGuard peer.
+> **Both tracks' Phase 4 gates may run concurrently.** There is no ordering requirement here — kick off the MT regression and the RUX build → staging deploy → e2e in parallel to save wall-clock. The strict **ST → RUX → MT** serialization applies only to the **production** deploys in Phase 5 (`/releases-deploy`), where the two workflows contend for the shared production WireGuard peer.
 
 > **Confirm the RUX staging site directory before the first run.** `deploy-rux.yml`'s `site-directory` defaults to `rux_releases` (the production path). The staging/automation deploy targets a different directory — confirm the correct value with Arturo Rios / the RUX team rather than accepting the default, since the deploy repoints the shared `/mnt/efs/www/rux` symlink on whatever directory it is given.
 
@@ -141,7 +141,7 @@ If any job failed, include the failing job and step names so the user can invest
 - Phase 4 passing does **not** authorize `/fast-forward` — the user must still explicitly authorize it (Step 4).
 - **Both tracks get a pre-fast-forward gate, via different workflows.** MT uses `deploy-production.yml` ("automation sites only" @ `staging`). RUX uses `staging-build-and-archive.yml` (build branch `staging`) → `deploy-rux.yml` (`environment=staging`, `release-tag=staging`) → `release-e2e-automation.yml`. Never pass a RUX branch or tag to `deploy-production.yml` — it has no RUX input.
 - A green gate on one track never authorizes the other track's `/fast-forward`. Satisfy and authorize each independently.
-- **The two Phase 4 gates may run concurrently** — no ordering requirement in this phase. Serialization (ST → MT → RUX) applies only to the Phase 5 production deploys.
+- **The two Phase 4 gates may run concurrently** — no ordering requirement in this phase. Serialization (ST → RUX → MT) applies only to the Phase 5 production deploys.
 - Never bypass or re-trigger past a failed regression without explicit user direction.
 - Never trigger this while a production `deploy-production.yml` run is already in progress (production deploys share a single WireGuard peer and must not overlap). If a run is in flight, wait for it to finish.
 - **Poll on an exact status match**, e.g. `[ "$(gh run view {id} --json status --jq '.status')" = "completed" ]`. A `grep -q "completed"` on the run output can match a step-level conclusion and exit while the run is still in progress, producing a false result.

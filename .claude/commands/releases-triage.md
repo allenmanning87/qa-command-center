@@ -169,7 +169,9 @@ For each discovered PR, parse `<repo>` from `github.com/{GITHUB_ORG}/<repo>/pull
 - `<repo> == RUX` → **RUX**. A second staging-based app repo, released on the same cadence as `{RELEASE_APP_REPO}` — PRs base on `staging`, it runs full CI (PR-title conventions, Snyk), it carries its own release tags (e.g. `v22.11.3`) cut by a fast-forward of `staging` → `main`, and its default branch is `main`.
 - Any other repo → **ST** (merges to the repo's default branch, own semver tag per `/releases-merge`).
 
-So there are **three** repo classes: **ST**, **MT** (`{RELEASE_APP_REPO}`), and **RUX**. They are ordered ST → MT → RUX everywhere PRs are listed (see the `[PR LIST]` structure in Step 6).
+So there are **three** repo classes: **ST**, **MT** (`{RELEASE_APP_REPO}`), and **RUX**. They are ordered ST → MT → RUX everywhere PRs are **listed** (see the `[PR LIST]` structure in Step 6).
+
+> This is the **listing** order only. The Phase 5 **deploy** order is different — **ST → RUX → MT** — because RUX deploys in under 40 seconds and must clear the shared WireGuard peer before the 20-minute MT deploy starts. Don't infer deploy sequence from the Dependencies list.
 
 > **RUX was previously excluded** as another team's responsibility. That changed as of **2026-08-25** — RUX releases are now part of this release process. Any older instruction to omit RUX PRs, tag them "handled by another team", or skip their review tabs is obsolete.
 >
