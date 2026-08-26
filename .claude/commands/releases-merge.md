@@ -222,7 +222,9 @@ MSYS_NO_PATHCONV=1 gh pr comment {staging_pr_number} --repo {GITHUB_ORG}/{APP_RE
 
 > **RUX needs one approving review on the release PR** before `/fast-forward`. Arturo Rios requests it from Osvaldo, Sebastian, or Israel. One approval is the norm — check `reviewDecision` is `APPROVED` before posting.
 >
-> **`{RELEASE_APP_REPO}` does not.** The MT release PR proceeds on **CI-green alone** — do not treat `reviewDecision: REVIEW_REQUIRED` or `mergeStateStatus: BLOCKED` on the MT staging → main PR as a blocker, and do not wait for a reviewer. Once its CI is green, go straight to Phase 4 (`/releases-regression`) exactly as before RUX existed. The approval requirement is RUX-only.
+> **`{RELEASE_APP_REPO}` does not.** The MT release PR proceeds on **CI-green alone** — do not treat `reviewDecision: REVIEW_REQUIRED` or `mergeStateStatus: BLOCKED` on the MT staging → main PR as a blocker, and do not wait for a reviewer. Once its CI is green, go straight to Phase 4 (`/releases-regression`) exactly as before RUX existed. The GitHub approval requirement is RUX-only.
+>
+> **Neither repo's `/fast-forward` is ever automatic.** This distinction is only about whether a *GitHub reviewer approval* is required to move forward — it does not relax the authorization rule. **Both RUX and `{RELEASE_APP_REPO}` require the user's explicit go-ahead in the conversation before their respective `/fast-forward` comment is posted**, asked for separately per track. A green CI, a passing Phase 4, and a GitHub approval are prerequisites, never authorization.
 
 Separate authorization does not mean separate timing: once both are authorized, **both `/fast-forward` comments may be posted at the same time.** Nothing about fast-forward contends between the repos — they merge and tag independently.
 
