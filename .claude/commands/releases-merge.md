@@ -163,15 +163,23 @@ Report the new PR URL.
 
 ### 4c-i — Open the staging → main PR in Chrome
 
-Immediately after the release PR is created, open it in the user's current Chrome window so they can watch CI live — mirroring the review-tab behavior in `/releases-triage`. Reuse the current window (append a tab — do **not** pass `--new-window`):
+Immediately after each release PR is created, open it in the user's current Chrome window so they can watch CI live — mirroring the review-tab behavior in `/releases-triage`. Reuse the current window (append a tab — do **not** pass `--new-window`):
 
 ```bash
 powershell.exe -NoProfile -Command "Start-Process chrome -ArgumentList @('{staging_pr_url}')"
 ```
 
-- Substitute `{staging_pr_url}` with the URL returned in step 4c.
+- Substitute `{staging_pr_url}` with the URL returned in step 4c for **this** track's repo.
 - If Chrome isn't found / `Start-Process` errors, report the failure and print the PR URL in chat so the user can open it manually — do not block the rest of the skill.
-- Report a one-line confirmation, e.g. `Opened {APP_REPO} staging → main PR in Chrome.`
+- Report a one-line confirmation naming the repo, e.g. `Opened {APP_REPO} staging → main PR in Chrome.`
+
+> **Open a tab for every track that produced a release PR — RUX included.** When both `{RELEASE_APP_REPO}` and `RUX` have release PRs, open **both**; the RUX PR is not optional and not "the other team's tab". Either open each one as its step 4c completes, or pass both URLs in a single `Start-Process` call:
+>
+> ```bash
+> powershell.exe -NoProfile -Command "Start-Process chrome -ArgumentList @('{mt_pr_url}','{rux_pr_url}')"
+> ```
+>
+> Both PRs need watching: they run independent CI, and each needs its own `/fast-forward` authorization.
 
 ### 4d — Poll CI checks on the staging PR, then gate on explicit go-ahead
 
