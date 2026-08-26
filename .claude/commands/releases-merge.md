@@ -126,7 +126,7 @@ Only proceed for a given repo if that repo's Step 2 staging health check passed.
 
 **No ordering requirement in Phase 3.** Run the tracks in parallel wherever it saves time: merge both repos' feature PRs, open both release PRs, and let both CI runs (20+ min each) overlap rather than run back to back. Both Phase 4 gates may also run concurrently, and both `/fast-forward` comments may be posted at once when both are clean.
 
-Strict ST → MT → RUX sequencing applies **only** to the Phase 5 production deploys, where `deploy-production.yml` and `deploy-rux.yml` contend for a shared WireGuard peer.
+Strict **ST → RUX → MT** sequencing applies **only** to the Phase 5 production deploys, where `deploy-production.yml` and `deploy-rux.yml` contend for a shared WireGuard peer. (RUX deploys first — it finishes in under 40 seconds.)
 
 ### 4a — Validate each {APP_REPO} PR's base branch
 ```
@@ -204,7 +204,7 @@ Regressions are caught before staging merges into `main`. This is distinct from 
 
 Each track's gate is independent: a green MT regression does **not** clear the RUX `/fast-forward`, and vice versa — each needs its own pass and its own authorization.
 
-**Both tracks' gates may run at the same time**, and both `/fast-forward` comments may be posted at the same time when both are clean. There is no ordering requirement anywhere in Phase 3 or Phase 4 — run them in parallel to save wall-clock. The strict ST → MT → RUX sequencing applies **only** to the Phase 5 production deploys.
+**Both tracks' gates may run at the same time**, and both `/fast-forward` comments may be posted at the same time when both are clean. There is no ordering requirement anywhere in Phase 3 or Phase 4 — run them in parallel to save wall-clock. The strict **ST → RUX → MT** sequencing applies **only** to the Phase 5 production deploys.
 
 - **If CI is not green:** report the failing checks with URLs so the user can send them to the developer. Do **not** run Phase 4 and do **not** post `/fast-forward`. Stop.
 - **If CI is green:** **do not post the `/fast-forward` comment automatically, and do not ask for `/fast-forward` go-ahead yet.** Hand off to Phase 4: invoke the `/releases-regression` skill. Phase 4 triggers the regression run, polls it to completion, and gates `/fast-forward` on the entire run concluding `success`.
@@ -280,7 +280,7 @@ Typical duration is ~3 minutes (observed 2m46s for `v22.12.0`). Report `✓ RUX 
 ### 4h — Proceed to Phase 5
 After the release tag is confirmed (or the 5-minute timeout is reached) **for every track that ran**, output the Step 5 final report and then invoke the `/releases-deploy` skill, passing each tag that was created. `/releases-deploy` handles the MT tag via `deploy-production.yml` and the RUX tag via `deploy-rux.yml`; each has its own explicit go-ahead gate.
 
-> **Phase 5 deploy order is ST → MT → RUX**, strictly sequential. ST deploys are run manually by the user. The MT and RUX deploy workflows share one WireGuard peer identity and **must never run concurrently** — see the serialization warning in `/releases-deploy`.
+> **Phase 5 deploy order is ST → RUX → MT**, strictly sequential. ST deploys are run manually by the user and never block the app repos. RUX deploys before MT because it finishes in under 40 seconds while MT takes 20+ minutes; the two workflows share one WireGuard peer identity and **must never run concurrently** — see the serialization warning in `/releases-deploy`.
 
 ---
 

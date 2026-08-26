@@ -12,21 +12,21 @@ Before doing anything else, read the `.env` file at the repo root using the `Rea
 
 You are executing **Phase 5** of the daily release process: deploying today's release tag(s) to production via the dedicated production workflow(s).
 
-## Deploy order — ST → MT → RUX
+## Deploy order — ST → RUX → MT
 
-| Order | Track | Who / how | Workflow | Tag series |
-|---|---|---|---|---|
-| 1 | **ST** (single-tenant repos) | **Manual — the user handles this outside the skill** | — | per-repo semver |
-| 2 | **MT** (`{RELEASE_APP_REPO}`) | This skill, Steps 1–3 | `deploy-production.yml` | `v1.x.y` |
-| 3 | **RUX** | This skill, Step 4 | `deploy-rux.yml` | `v22.x.y` |
+| Order | Track | Who / how | Workflow | Tag series | Typical duration |
+|---|---|---|---|---|---|
+| 1 | **ST** (single-tenant repos) | **Manual — the user handles this outside the skill** | — | per-repo semver | — |
+| 2 | **RUX** | This skill, Step 4 | `deploy-rux.yml` | `v22.x.y` | **< 40 seconds** |
+| 3 | **MT** (`{RELEASE_APP_REPO}`) | This skill, Steps 1–3 | `deploy-production.yml` | `v1.x.y` | 20+ minutes |
 
 Run only the track(s) that produced a tag in Phase 3.
 
-**ST deploys are the user's to run manually, and are NOT a blocker for MT or RUX.** This skill does not trigger them and must not wait on them. ST repos deploy independently of the app repos — do not ask the user to confirm ST is finished before starting MT or RUX, and never hold an app-repo deploy on ST state. The "1" in the table is the customary order, not a dependency.
+**ST deploys are the user's to run manually, and are NOT a blocker for RUX or MT.** This skill does not trigger them and must not wait on them. ST repos deploy independently of the app repos — do not ask the user to confirm ST is finished before starting RUX or MT, and never hold an app-repo deploy on ST state. The "1" in the table is the customary order, not a dependency.
 
-**MT before RUX** — this one *is* a real ordering constraint, for two reasons:
-- **Hard:** the two workflows share a WireGuard peer and cannot overlap (see below).
-- **Soft:** MT carries the database migrations and the e2e tollgate, so blockers surface there first, and on RUX sites the business center (RUX) and `/backend/admin/` (`{RELEASE_APP_REPO}`) are two halves of one site — shipping the front end ahead of its backend can briefly break a paired fix.
+**RUX before MT.** The two workflows share a WireGuard peer and cannot overlap (see below), so one must fully finish before the other starts. RUX goes first because it is a symlink swap over a prebuilt bundle and completes in **under 40 seconds**, whereas the MT deploy runs migrations plus a blocking e2e tollgate across every production site and takes 20+ minutes. Running the short one first frees the peer almost immediately; the reverse would hold a 40-second deploy behind a 20-minute one for no benefit.
+
+> **Note on paired fixes.** When a ticket has both a RUX and a `{RELEASE_APP_REPO}` PR, this order briefly puts the front end in production ahead of its backend. The window is under a minute and the MT deploy follows straight after, so it is acceptable — but if a specific paired change would visibly break in that gap, say so and let the user decide the order for that release. Do not silently reorder.
 
 ---
 
@@ -53,11 +53,28 @@ gh run list --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} --workflow deploy-rux.yml 
 
 If any run is `queued` or `in_progress`, **wait** — do not trigger.
 
-This serialization is what makes the **ST → MT → RUX** order above a strict sequence rather than a preference: MT must finish completely before RUX is triggered.
+This serialization is what makes the **ST → RUX → MT** order above a strict sequence rather than a preference: the RUX deploy must reach a terminal conclusion before the MT deploy is triggered. (It usually takes under 40 seconds, so the wait is negligible.)
 
 > **Scope of this rule: production deploys only.** Phases 3 and 4 have no ordering requirement — both tracks' pre-fast-forward gates may run concurrently, and both `/fast-forward` comments may be posted at the same time when both are clean. Serialization starts here, at the production deploy.
 >
 > The one Phase 4 caveat: a Phase 4 regression run also drives `deploy-production.yml` against the production automation sites, so don't start a **production** RUX deploy while an MT regression run is still active — that's the same peer contention, not a phase-ordering rule.
+
+---
+
+## ⚠ Execution order vs step numbering
+
+The step numbers below are historical and **do not** match the execution order. Run them in this sequence:
+
+| Run | Section | Track |
+|---|---|---|
+| 1st | **Step 4** (4a–4f) | **RUX** production deploy — *if a RUX tag exists* |
+| 2nd | **Step 1** → **Step 2** | **MT** go-ahead gate, then full production deploy |
+| 3rd | **Step 3** | MT staging mirror (`{RELEASE_BLT1_AUTOMATION_STAGING}`) |
+| 4th | **Notify** → **Final Report** | — |
+
+RUX (Step 4) runs **first** because it finishes in under 40 seconds and frees the shared WireGuard peer; MT (Steps 1–3) is the 20-minute leg and goes second. If there is no RUX tag today, skip straight to Step 1 and the numbering reads normally.
+
+Each track still has its **own** explicit go-ahead gate (Step 4a for RUX, Step 1 for MT) — one authorization never covers both.
 
 ---
 
@@ -97,9 +114,15 @@ Use the tag string **exactly as it exists** on the repo (e.g. `v1.222.1`). The w
 
 ## Step 1 — Explicit go-ahead gate (REQUIRED)
 
+> **If a RUX tag exists, Step 4 runs before this** — deploy RUX first, confirm it reached a terminal conclusion, then start here.
+
 Before triggering anything, **stop and present a summary of the release (tag + PRs), then explicitly ask the user: "Ready to deploy `{release_tag}` to full production?"**
 
 Do not trigger the deploy until the user says yes in the current conversation (e.g. "yes", "go ahead", "proceed"). Full production deploys to live production and runs migrations on every production site — it is irreversible. Prerequisites being met is **not** authorization; the user must explicitly authorize it here. GitHub state / a green staging PR does NOT count as confirmation.
+
+A go-ahead given for the RUX deploy (Step 4a) does **not** authorize this one. Ask again, naming the MT tag.
+
+**Before triggering: confirm the RUX deploy has fully finished** — no `queued` or `in_progress` run of `deploy-rux.yml` or `deploy-production.yml`. Shared WireGuard peer; they must never overlap.
 
 ---
 
@@ -188,13 +211,13 @@ gh run view {run_id} --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} --json jobs --jq 
 
 ## Step 4 — Deploy RUX to production (only if Phase 3 cut a RUX tag)
 
-Skip this step entirely when there is no RUX tag today.
+> **Run this step FIRST**, before Steps 1–3. RUX completes in under 40 seconds and frees the shared WireGuard peer; MT is the 20-minute leg. See "Execution order vs step numbering" above. Skip this step entirely when there is no RUX tag today.
 
-**Before triggering: confirm the MT deploy (Steps 2–3) has fully finished** — no `queued` or `in_progress` run of `deploy-production.yml` **or** `deploy-rux.yml`. See the WireGuard serialization warning at the top of this skill; these two workflows share one peer identity and must never overlap.
+**Before triggering: confirm nothing is in flight** — no `queued` or `in_progress` run of `deploy-rux.yml` **or** `deploy-production.yml` (the latter includes any Phase 4 regression run). See the WireGuard serialization warning at the top of this skill; these two workflows share one peer identity and must never overlap.
 
 ### 4a — Explicit go-ahead gate (REQUIRED)
 
-The Step 1 authorization covered the **MT** deploy only. Ask separately: **"Ready to deploy RUX `{rux_tag}` to production?"** Wait for an explicit yes in the current conversation. A go-ahead for MT is never a go-ahead for RUX.
+Ask: **"Ready to deploy RUX `{rux_tag}` to production?"** Wait for an explicit yes in the current conversation. This authorizes the **RUX** deploy only — the MT deploy needs its own go-ahead at Step 1, asked separately. One authorization never covers both tracks, in either direction.
 
 ### 4b — REQUIRED: confirm "Release and archive" has completed
 
@@ -286,6 +309,14 @@ Wait for the user to confirm ("posted", "done", etc.) before presenting the Fina
 ```
 Phase 5 Complete — {YYYY-MM-DD}
 
+RUX — release tag: {rux_tag}          (deployed first)
+✓ Release and archive (RUX on-push-default-branch.yml) — {conclusion} — {run_url}
+    semantic-release / add-jira-fix-version / Build application / Archive build artifact
+✓ RUX production deploy — {conclusion} — {run_url}
+    artifact: s3://govos-infrastructure-artifacts-l/RUX/releases/{rux_tag}.tar.gz
+    Jira fix versions: [✓ set] OR [⚠ step failed — set manually (deploy still succeeded)]
+    smoke check: [✓ new UI loads + login OK] OR [⚠ {what you saw}]
+
 MT ({RELEASE_APP_REPO}) — release tag: {tag}
 ✓ Full production deploy — {conclusion} — {run_url}
     e2e gate (blt1-automation-production): {conclusion}
@@ -293,14 +324,6 @@ MT ({RELEASE_APP_REPO}) — release tag: {tag}
     production sites (nexus8, nexus8-api, govos-blt-colorado): deployed & migrated
     staging nexus8 + qa munirevs-mrnexus: deployed & migrated (via deploy-production.yml built-in jobs)
 ✓ MT staging deploy ({RELEASE_BLT1_AUTOMATION_STAGING} @ staging) — {conclusion} — {run_url}
-
-RUX — release tag: {rux_tag}
-✓ Release and archive (RUX on-push-default-branch.yml) — {conclusion} — {run_url}
-    semantic-release / add-jira-fix-version / Build application / Archive build artifact
-✓ RUX production deploy — {conclusion} — {run_url}
-    artifact: s3://govos-infrastructure-artifacts-l/RUX/releases/{rux_tag}.tar.gz
-    Jira fix versions: [✓ set] OR [⚠ step failed — set manually (deploy still succeeded)]
-    smoke check: [✓ new UI loads + login OK] OR [⚠ {what you saw}]
 ```
 
 Omit a track's section entirely if it had no tag today. If any job failed, include the failing job and step names so the user can investigate.
@@ -321,7 +344,8 @@ Do not transition released tickets to Closed as part of Phase 5. Flag it if the 
 
 ## Important Rules
 
-- **Deploy order is ST → MT → RUX.** Only the MT → RUX leg is a hard constraint (shared WireGuard peer) — never start RUX until the MT deploy has reached a terminal conclusion. **ST is not a blocker for either app repo**: it is run manually by the user, deploys independently, and must never be waited on or confirmed before triggering MT or RUX.
+- **Deploy order is ST → RUX → MT.** Only the RUX → MT leg is a hard constraint (shared WireGuard peer) — never start the MT deploy until the RUX deploy has reached a terminal conclusion. RUX goes first because it finishes in under 40 seconds while MT takes 20+ minutes. **ST is not a blocker for either app repo**: it is run manually by the user, deploys independently, and must never be waited on or confirmed before triggering RUX or MT.
+- **Step numbers do not match execution order.** Step 4 (RUX) runs before Steps 1–3 (MT). See "Execution order vs step numbering" near the top.
 - The standard flow is a single "Deploy to full production" trigger, gated on explicit user go-ahead obtained **before** triggering. Never trigger full production without that go-ahead. Do not run "automation sites only" as a pre-step unless the user explicitly asks (it would deploy the automation sites twice).
 - After the full-production deploy succeeds, always run Step 3 (MT staging deploy via `legacy-deploy-blt-mt.yml`) for `{RELEASE_BLT1_AUTOMATION_STAGING}` only. `deploy-production.yml` now covers staging `nexus8` (and qa `munirevs-mrnexus`) via its built-in jobs, so **do not** legacy-deploy `nexus8` — but `{RELEASE_BLT1_AUTOMATION_STAGING}` is still not covered, so skipping Step 3 would leave that staging mirror behind production.
 - The e2e tollgate inside the workflow is the release's regression check — never bypass it or override a failed gate without explicit user direction.
