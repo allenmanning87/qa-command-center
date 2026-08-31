@@ -97,6 +97,7 @@ The release requests are every entry in `fields.issuelinks` where:
 Collect each such `outwardIssue.key` (the child ticket) along with its `fields.summary`, `fields.status.name`, and `fields.priority.name` (already present in the issuelinks payload).
 
 - **All linked tickets are in scope regardless of status.** Capture and show each ticket's status in the report, but do **not** exclude a ticket because of its status.
+- **All linked tickets are in scope regardless of issue type.** The link type is the only filter — `issuetype` is not. Bugs, Stories, Tasks and **Epics** all count as release requests when they are linked this way. An Epic linked to the release story is a request like any other: fetch its comments, discover its PR(s), run the gates on it, count it in `[N] linked tickets`, and give it a Dependencies bullet and review tabs. Do **not** treat an Epic as a container to expand, skip as "not a real request", or drop because its children are linked elsewhere — that silently shrinks the release. The same applies to any issue type not named here.
 - **Normalize ticket keys to uppercase.** Tickets may span multiple projects (e.g. `BLI-*` and `BLTE-*`) — handle both.
 - **Empty state:** if there are zero qualifying linked tickets, report `No tickets linked to {STORY-KEY} — nothing to triage.` and stop (do not proceed to PR discovery or Phase 2).
 
@@ -402,7 +403,7 @@ If **nothing** was flagged, say so plainly — e.g. `All [N] requests are clean 
 
 In an exceptions-only report the counts are the **only** representation most requests get — a clean request that silently vanishes leaves no trace for the user to catch. So derive every number from the actual ticket list rather than counting by hand, and verify these identities before printing:
 
-- `[N] linked tickets` **==** the number of qualifying entries collected in Step 2 (count the `outwardIssue` entries in `issuelinks`, don't re-tally from your own report blocks)
+- `[N] linked tickets` **==** the number of qualifying entries collected in Step 2 (count the `outwardIssue` entries in `issuelinks`, don't re-tally from your own report blocks). Count **every** qualifying link, including Epics and any other issue type — the link type is the only filter (Step 2).
 - `[C] clean + [F] need review` **==** `[N]`
 - `[X] releasable PRs` **==** total PRs discovered − gate-excluded (unresolved comments / not approved / CI failed / merge conflicts / RUX behind base) − blackout-HELD − no-PR tickets
 - `[N] ST + [M] MT + [R] RUX` **==** `[X]`
@@ -415,6 +416,7 @@ If any identity fails to balance, **re-derive from the Step 2 ticket list before
 
 - **The report is exceptions-only.** Only requests needing review or a decision get a block; clean requests are a count. See Step 5 for the flag criteria. This governs the report alone — triage still runs every gate against every request, and the Step 6 Dependencies list still contains every releasable PR.
 - The linked tickets on the story are the source of truth for what to release; a ticket's **newest PR-bearing comment** is the source of truth for its PR.
+- **Every qualifying linked ticket is triaged — no filtering by issue type or status.** Epics, Stories, Tasks and Bugs are all release requests when linked to the story; only the link type (Step 2) decides what qualifies. Never skip an Epic as a container or a "not a real request".
 - If the Jira API returns an error for a ticket key, note it rather than skipping the ticket.
 - Normalize Jira keys to uppercase.
 - Never guess a PR URL — only report one that was found in a comment.
