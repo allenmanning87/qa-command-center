@@ -261,7 +261,11 @@ Individual checks with conclusion `SKIPPED` or `NEUTRAL` are also **not** failur
 - `mergeable == CONFLICTING` (usually `mergeStateStatus == DIRTY`) → the branch conflicts with its base. Flag `⚠ MERGE CONFLICTS — needs rebase`. The developer must resolve against the base branch before this can be released.
 - `isDraft == true` → flag `⚠ DRAFT PR — not ready to merge`.
 - `mergeStateStatus == BLOCKED` → merge blocked by branch protection (missing required approval or a required check). Pair this with the Gate 2 / Gate 3 finding that explains *why*.
-- `mergeStateStatus == BEHIND` → the branch is behind its base and may need an update before merging. This is **not** a hard blocker — note it only if something else about the PR is already flagged, since `/releases-merge` handles ordinary fast-forward updates.
+- `mergeStateStatus == BEHIND` → the branch is behind its base. **Whether this blocks depends on the repo:**
+  - **`RUX` → hard blocker. Flag `⚠ BEHIND BASE — needs rebase by developer (RUX)`.** RUX has `allow_merge_commit: false`, so there is no merge commit available to absorb the base's commits — `gh pr merge` fails outright with *"the head branch is not up to date with the base branch"*. The fix is a **local rebase by the PR author**: GitHub's web "Update branch" button is blocked by repository rules (Copilot review must re-run on changes), so neither you nor `/releases-merge` can clear it. Name the PR author in the Notes so the user knows who to chase, and treat it exactly like a merge conflict for reporting purposes — it excludes the PR from the releasable set until the author pushes a rebase.
+  - **`{RELEASE_APP_REPO}` / ST → not a hard blocker.** These repos allow merge commits, so `/releases-merge` absorbs an out-of-date branch as an ordinary merge. Note it only if something else about the PR is already flagged.
+
+  Do **not** report a `BEHIND` RUX PR as "context rather than action" or defer it to `/releases-merge` — that wastes the one chance to catch it before the merge attempt fails.
 - `mergeable == MERGEABLE` with `mergeStateStatus` `CLEAN`, `UNSTABLE`, or `HAS_HOOKS` → passes.
 
 > **`mergeable` can return `UNKNOWN`.** GitHub computes mergeability lazily — the first query after a push often returns `UNKNOWN` with `mergeStateStatus: UNKNOWN`. This is **not** a result. Wait a few seconds and re-query any PR that returns `UNKNOWN`, and only report a conflict once GitHub actually reports `CONFLICTING`. Never report `UNKNOWN` as either passing or failing.
@@ -337,7 +341,7 @@ A request gets a full block **only if it needs action**. Flag it if **any** of t
 - `⚠ UNRESOLVED COMMENTS` — Gate 1 (Step 3.5b)
 - `⚠ NOT APPROVED` (only when the merge is `BLOCKED`) / `⚠ CHANGES REQUESTED` — Gate 2 (Step 3.5b)
 - `⚠ CI FAILED` / `⚠ CI PENDING` — Gate 3 (Step 3.5b)
-- `⚠ MERGE CONFLICTS` / `⚠ DRAFT PR` — Gate 4 (Step 3.5b)
+- `⚠ MERGE CONFLICTS` / `⚠ DRAFT PR` / `⚠ BEHIND BASE — needs rebase by developer (RUX)` — Gate 4 (Step 3.5b)
 - `⛔ HELD` by the blackout gate (Step 3.8)
 - `MULTI-PR` — the ticket has more than one PR (e.g. a `RUX` frontend PR plus its `{RELEASE_APP_REPO}` backend counterpart), **and** they do not all clear the gates: flag it when any one of them is gate-excluded while another is clean, so the user knows only part of the fix would ship. A multi-PR ticket whose PRs are all clean needs no block.
 - The ticket's own comments show an **open issue, failing test, unmet reporter feedback, or an irreversible/manual step** that needs a decision before merge (e.g. QA reported a failure after the PR was approved, a reporter said the fix still isn't working, a migration that cannot be rolled back)
@@ -363,7 +367,7 @@ Everything else — **HIGH confidence, no unresolved comments, no blackout hold,
 **[TICKET-KEY]** — [ticket summary] — [status]
 JIRA: [full URL]
 PR: [full GitHub URL(s)] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the ticket; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`. For MULTI-PR, list every PR.
-Flag: [the specific reason(s) this needs review — e.g. `⚠ MERGE CONFLICTS — needs rebase`, `⚠ DRAFT PR — not ready to merge`, `⚠ UNRESOLVED COMMENTS — send back to developer (N threads)`, `⚠ NOT APPROVED — merge blocked, no approver`, `⚠ CHANGES REQUESTED — send back to developer`, `⚠ CI FAILED — {check names}`, `⚠ CI PENDING — {check names}`, `⛔ {priority} — HELD (release blackout, not P0/P1)`, `MULTI-PR`, `NEEDS MANUAL REVIEW — no PR found in ticket comments`, `QA reported failure after approval`. List **every** gate the PR fails, not just the first.]
+Flag: [the specific reason(s) this needs review — e.g. `⚠ MERGE CONFLICTS — needs rebase`, `⚠ BEHIND BASE — needs rebase by developer (RUX)`, `⚠ DRAFT PR — not ready to merge`, `⚠ UNRESOLVED COMMENTS — send back to developer (N threads)`, `⚠ NOT APPROVED — merge blocked, no approver`, `⚠ CHANGES REQUESTED — send back to developer`, `⚠ CI FAILED — {check names}`, `⚠ CI PENDING — {check names}`, `⛔ {priority} — HELD (release blackout, not P0/P1)`, `MULTI-PR`, `NEEDS MANUAL REVIEW — no PR found in ticket comments`, `QA reported failure after approval`. List **every** gate the PR fails, not just the first.]
 Confidence: [MEDIUM / LOW / NEEDS MANUAL REVIEW / HIGH]
 Notes: [what the user needs in order to decide — who left the unresolved threads and whether they're human or bot, stale or current; which specific checks failed and the run URL; what the open issue is; what the irreversible step requires. Be specific enough that the user can act without opening the PR.]
 
@@ -381,6 +385,7 @@ After the flagged blocks, include a **Releasable set** line:
 Then add only the lines that apply:
 
 - `Excluded (merge conflicts): [ticket] (#PR), …`
+- `Excluded (behind base — RUX rebase needed): [ticket] (RUX#PR — author {login}), …`
 - `Excluded (unresolved review comments): [ticket] (#PR), …`
 - `Excluded (not approved / merge blocked): [ticket] (#PR), …`
 - `Excluded (CI failed): [ticket] (#PR — {check name}), …`
@@ -399,7 +404,7 @@ In an exceptions-only report the counts are the **only** representation most req
 
 - `[N] linked tickets` **==** the number of qualifying entries collected in Step 2 (count the `outwardIssue` entries in `issuelinks`, don't re-tally from your own report blocks)
 - `[C] clean + [F] need review` **==** `[N]`
-- `[X] releasable PRs` **==** total PRs discovered − gate-excluded (unresolved comments / not approved / CI failed / merge conflicts) − blackout-HELD − no-PR tickets
+- `[X] releasable PRs` **==** total PRs discovered − gate-excluded (unresolved comments / not approved / CI failed / merge conflicts / RUX behind base) − blackout-HELD − no-PR tickets
 - `[N] ST + [M] MT + [R] RUX` **==** `[X]`
 - Tickets and PRs are **not** 1:1 — a ticket can contribute two PRs (RUX + `{RELEASE_APP_REPO}`), so never assume the PR count equals the linked-ticket count. Derive each independently.
 - The Step 6 Dependencies list contains exactly `[X]` bullets

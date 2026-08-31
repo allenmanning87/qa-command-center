@@ -136,13 +136,23 @@ gh pr view {number} --repo {GITHUB_ORG}/{APP_REPO} --json baseRefName,state
 - If `baseRefName` is not `staging`: flag as "expected base=staging, got {branch} — needs manual review", skip it.
 
 ### 4b — Merge each feature PR into staging
-For each valid {APP_REPO} PR (in report order):
-```
-gh pr merge {number} --repo {GITHUB_ORG}/{APP_REPO} --merge
-```
+
+**The merge flag differs per repo — using the wrong one fails outright:**
+
+| Repo | Command | Why |
+|---|---|---|
+| `{RELEASE_APP_REPO}` | `gh pr merge {number} --repo {GITHUB_ORG}/{RELEASE_APP_REPO} --merge` | Merge commits allowed |
+| `RUX` | `gh pr merge {number} --repo {GITHUB_ORG}/RUX --squash` | **`allow_merge_commit: false`** — `--merge` is rejected by the repo |
+
+RUX lands every feature PR as a single-parent squash (confirm with `gh api repos/{GITHUB_ORG}/RUX --jq '.allow_merge_commit'` → `false`). Passing `--merge` there fails; use `--squash`.
+
 Report each merge as it completes.
 
-> **Out-of-date RUX branches.** If a merge fails because the branch is behind `staging`, the fix is a **rebase**, not a merge commit — the RUX team rebases so `/fast-forward` keeps the same commit references. Note that GitHub's web "Update branch" button may be blocked by repository rules (Copilot code review must run on changes), so the rebase generally has to be done locally by the developer. Report the PR as blocked, ask the developer to rebase and push, and move on — do not attempt the rebase yourself.
+> **Out-of-date RUX branches are a hard blocker, and triage should already have flagged them.** Because merge commits are disabled in RUX, a branch that is `BEHIND` `staging` cannot be merged at all — `gh pr merge` fails with *"the head branch is not up to date with the base branch."* The fix is a **local rebase by the PR author**; GitHub's web "Update branch" button is blocked by repository rules (Copilot review must re-run on changes), so **you cannot clear this yourself — never attempt the rebase.**
+>
+> Report the PR as blocked, name the author (`gh pr view {number} --repo {GITHUB_ORG}/RUX --json author`), and move on to the other track. Re-verify with `gh pr view ... --json mergeStateStatus` before retrying — only merge once it reads `CLEAN`, not merely because someone said it was updated.
+>
+> If a `BEHIND` RUX PR reaches this step *unflagged*, triage's Gate 4 failed to do its job — see the repo-specific `BEHIND` rule in `/releases-triage` Step 3.5b.
 
 ### 4c — Create the staging → main PR
 After all feature PRs are merged into that repo's staging, create the release PR:
@@ -195,19 +205,26 @@ until ! gh pr checks {staging_pr_number} --repo {GITHUB_ORG}/{APP_REPO} 2>&1 | g
 - Report all CI results: list any failing checks with their URLs.
 - If the 15-minute timeout is reached with checks still pending: report current status and stop.
 
-**The fast-forward gate is CI-green + Phase 4 regression — and it applies to both tracks.** After a staging PR's CI is green, Phase 4 (`/releases-regression`) must run and pass for **that repo** before its `/fast-forward`. Each track validates its own `staging` branch on an automation site, then runs e2e:
+**The fast-forward gate differs per track — Phase 4 is MT-only.**
 
-- **MT** — `deploy-production.yml`, `deploy-target="Deploy to automation sites only"`, `release-tag=staging`.
-- **RUX** — `staging-build-and-archive.yml` (RUX repo, `branch=staging`) → `deploy-rux.yml` (`environment=staging`, `release-tag=staging`) → `release-e2e-automation.yml`.
+| Track | Gate before `/fast-forward` |
+|---|---|
+| **MT** (`{RELEASE_APP_REPO}`) | staging PR CI green → **Phase 4 (`/releases-regression`) passes** → user's explicit go-ahead |
+| **RUX** | staging PR CI green → **one approving review** (`reviewDecision == APPROVED`) → user's explicit go-ahead |
 
-Regressions are caught before staging merges into `main`. This is distinct from the Phase 5 e2e gate, which runs against the built release tag *after* fast-forward.
+**Do not run Phase 4 for RUX, and do not offer to.** RUX runs no e2e regression suite at any point: it enforces unit tests + lint through a **pre-push git hook**, so problems are caught before a PR exists, and its post-deploy verification is a manual smoke check (open a new-UI URL, confirm it loads and login works). Never describe a RUX release as regression-verified.
 
-Each track's gate is independent: a green MT regression does **not** clear the RUX `/fast-forward`, and vice versa — each needs its own pass and its own authorization.
+Phase 4 for MT validates the `staging` **branch** via `deploy-production.yml`, `deploy-target="Deploy to automation sites only"`, `release-tag=staging`. Regressions are caught before staging merges into `main`. This is distinct from the Phase 5 e2e gate, which runs against the built release tag *after* fast-forward.
 
-**Both tracks' gates may run at the same time**, and both `/fast-forward` comments may be posted at the same time when both are clean. There is no ordering requirement anywhere in Phase 3 or Phase 4 — run them in parallel to save wall-clock. The strict **ST → RUX → MT** sequencing applies **only** to the Phase 5 production deploys.
+**Consequence for sequencing:** once RUX's CI is green, RUX is immediately at its authorization point — the approving review is typically the only thing left. Ask for the RUX go-ahead as soon as that review lands; never queue RUX behind an MT regression run. RUX will often be ready to ship well before MT.
+
+Each track's gate is independent and authorized separately — a green MT regression does **not** clear the RUX `/fast-forward`, and vice versa.
+
+**Both tracks' gates may be satisfied at the same time**, and both `/fast-forward` comments may be posted at the same time when both are clean and both authorized. There is no ordering requirement anywhere in Phase 3 or Phase 4 — run them in parallel to save wall-clock. (Only MT has a Phase 4 gate at all; RUX's runs no regression.) The strict **ST → RUX → MT** sequencing applies **only** to the Phase 5 production deploys.
 
 - **If CI is not green:** report the failing checks with URLs so the user can send them to the developer. Do **not** run Phase 4 and do **not** post `/fast-forward`. Stop.
-- **If CI is green:** **do not post the `/fast-forward` comment automatically, and do not ask for `/fast-forward` go-ahead yet.** Hand off to Phase 4: invoke the `/releases-regression` skill. Phase 4 triggers the regression run, polls it to completion, and gates `/fast-forward` on the entire run concluding `success`.
+- **If CI is green — MT track:** **do not post the `/fast-forward` comment automatically, and do not ask for `/fast-forward` go-ahead yet.** Hand off to Phase 4: invoke the `/releases-regression` skill. Phase 4 triggers the regression run, polls it to completion, and gates `/fast-forward` on the entire run concluding `success`.
+- **If CI is green — RUX track:** **skip Phase 4 entirely.** Check `reviewDecision`: if it is not `APPROVED`, report that the release PR needs one approving review (Arturo requests it from Osvaldo, Sebastian, or Israel) and name that as the only remaining blocker. Once it reads `APPROVED`, ask the user for the RUX `/fast-forward` go-ahead directly.
   - **Phase 4 fails** → `/fast-forward` is blocked. Report the failing jobs/steps with the run URL. Stop.
   - **Phase 4 passes** → Phase 4 presents the `/fast-forward` go-ahead prompt (staging CI green + regression green) and waits for the user's explicit authorization before control returns here at step 4e. GitHub PR approval status does NOT count as confirmation — the user must explicitly authorize in the current conversation.
 
@@ -306,7 +323,9 @@ RUX Release:
 ✓ PRs merged into staging: #{N} ({JIRA}), #{N} ({JIRA}), ...
 ✓ Staging → Main PR: {URL}
 CI: [✓ all checks green] OR [⚠ failing: {check name} — {url}] OR [⏳ still running — check manually]
+Approval: [✓ approved by {login}] OR [⚠ needs 1 approving review — ask Osvaldo / Sebastian / Israel]
 Tag: [v{version}] OR [pending /fast-forward]
+(No Phase 4 line — RUX runs no regression suite.)
 
 Flagged / Skipped:
 ⚠ {repo} PR #{N} ({JIRA}) — {reason}
