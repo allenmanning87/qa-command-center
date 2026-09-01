@@ -47,9 +47,17 @@ gh pr diff {number} --repo {GITHUB_ORG}/{repo}
 
 **For MT PRs ({RELEASE_APP_REPO})** — migrations are handled by automation, so no special action needed *unless* the diff contains either of the following inside a migration file path:
 - References to the `businesstaskdata` table (e.g. `ALTER TABLE businesstaskdata`, `businesstaskdata` in a CREATE/INSERT/UPDATE/SELECT statement in a migration)
-- `ADD INDEX` or `ADD KEY`
+- An index add (`ADD INDEX`, `ADD KEY`, or `CREATE INDEX`) **on the `businesstask`, `businesstaskdata`, or `transactions` table**
 
 MT PRs with those specific patterns are **skipped for merging** — do not merge them. Collect them for the final report and continue processing all other PRs normally.
+
+> **The index rule covers three tables: `businesstask`, `businesstaskdata`, and `transactions`.** These are the high-row-count tables where an index build is slow enough to matter during a deploy. An index add on any *other* table — `business`, `extension_definition`, etc. — is **not** a blocker and merges normally.
+>
+> History, so the scope isn't re-litigated each release: the rule was originally a blanket `ADD INDEX`/`ADD KEY` match (too broad — it falsely held tenant-scoped index adds). On **2026-09-01** dev narrowed it to `businesstaskdata` + `transactions`, and MRNexus#6959 was merged over a `CREATE INDEX` on `businesstask` on that basis. Dev then **added `businesstask` to the list for future releases** — that is the current rule above.
+>
+> Tenant-scoped path (`app/migrations/tenants/{tenant}/...`) remains a separate mitigating signal: those run against one tenant only. But path no longer decides on its own — the **table** is what determines whether the index rule fires.
+>
+> Note for the report: an index add is not the only slow DDL. `ALTER TABLE ... ADD COLUMN` on a large shared table can lock comparably, and is deliberately **not** screened by this rule. When a default-scope migration adds columns to a widely-populated table, mention it in the final report as a deploy-window consideration rather than blocking on it.
 
 **For RUX PRs** — RUX is a React/Vite front end with no database layer, so the migration scan does not apply. Skip it. If a RUX PR's diff somehow does contain a migration path, that is unexpected — flag it for manual review rather than guessing.
 

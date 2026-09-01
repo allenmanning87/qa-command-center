@@ -293,7 +293,41 @@ Replace `REPO` and `N` with the repo name and PR number.
 
 - If the output is a non-empty array → the PR has migrations that must be run manually on the ST tenant. Mark it with `(has migrations — run manually)` in the Step 5 report.
 - If the output is `[]` → no annotation needed.
-- Skip `{RELEASE_APP_REPO}` PRs — MT migrations are handled automatically during the merge process.
+
+### Step 3.6b — Check MT PRs for merge-blocking migrations
+
+MT migrations run automatically at merge, so they need no manual step — but two patterns cause `/releases-merge` Step 1 to **skip the PR entirely**. Those must be caught here, during grooming, not discovered at the merge step after the release list is closed.
+
+For every discovered PR in `{RELEASE_APP_REPO}`, list its migration files and scan their **added lines**:
+
+```bash
+gh pr diff N --repo {GITHUB_ORG}/{RELEASE_APP_REPO} --name-only | grep -i 'migrat'
+```
+
+For each migration file found, read the added lines and flag the PR if either applies:
+- A reference to the **`businesstaskdata`** table in a CREATE/INSERT/UPDATE/SELECT/ALTER statement (a doc comment mentioning the name does **not** count — check for actual SQL).
+- An index add (`ADD INDEX`, `ADD KEY`, `CREATE INDEX`) **on `businesstask`, `businesstaskdata`, or `transactions`**. An index add on any other table is fine and needs no flag.
+
+> Keep this table list identical to `/releases-merge` Step 1 — the whole point of this check is to predict what the merge step will skip. Current list (dev, 2026-09-01): **`businesstask`, `businesstaskdata`, `transactions`**.
+
+If a PR trips either pattern, flag it in the Step 5 report as `⚠ MT MIGRATION — will be skipped by /releases-merge ({pattern}, {table})` with confidence unchanged, and say plainly that the ticket either needs a merge-time override or should roll to the next release. This is a **decision the user makes during triage**, while there is still time to chase the developer.
+
+Also worth a Notes line, though not a flag: a **default-scope** (`app/migrations/default/...`) `ALTER TABLE ... ADD COLUMN` against a large shared table (`businesstask`, `business`, `transactions`). It runs on every MT tenant and can lock comparably to an index build. Mention it as a deploy-window consideration.
+
+### Step 3.6c — Check app-repo staging health
+
+`/releases-merge` Step 2 halts a repo's merges when its `staging` is ahead of `main`. Check it here too, so a dirty staging branch is a grooming-time decision rather than a mid-merge surprise.
+
+For each app repo that has PRs in today's release (`{RELEASE_APP_REPO}` and/or `RUX`):
+
+```bash
+gh api repos/{GITHUB_ORG}/{APP_REPO}/compare/main...staging --jq '{ahead_by, behind_by}'
+```
+
+- `ahead_by == 0` → clean, no mention needed.
+- `ahead_by > 0` → list the offending commits (`.commits[] | {sha, author, msg}`) and flag in the Step 5 report as `⚠ {APP_REPO} STAGING AHEAD OF MAIN BY {N}` with the commit list. Note whether they belong to today's tickets. A commit paired with its own revert nets to nothing but **still rides into `main`** on the fast-forward and appears in the release notes — say so, and let the user decide whether to proceed.
+
+Report per repo; a dirty staging on one app repo never implies anything about the other.
 
 > Note: the migration/SUTS annotations are shown in the **Step 5 report only**. The Step 6 Dependencies bullets are just the PR link (see Step 6).
 
@@ -343,6 +377,8 @@ A request gets a full block **only if it needs action**. Flag it if **any** of t
 - `⚠ NOT APPROVED` (only when the merge is `BLOCKED`) / `⚠ CHANGES REQUESTED` — Gate 2 (Step 3.5b)
 - `⚠ CI FAILED` / `⚠ CI PENDING` — Gate 3 (Step 3.5b)
 - `⚠ MERGE CONFLICTS` / `⚠ DRAFT PR` / `⚠ BEHIND BASE — needs rebase by developer (RUX)` — Gate 4 (Step 3.5b)
+- `⚠ MT MIGRATION — will be skipped by /releases-merge` — Step 3.6b (a `businesstaskdata` reference, or an index add on `businesstask`/`businesstaskdata`/`transactions`)
+- `⚠ {APP_REPO} STAGING AHEAD OF MAIN` — Step 3.6c (blocks that repo's merges in `/releases-merge` Step 2)
 - `⛔ HELD` by the blackout gate (Step 3.8)
 - `MULTI-PR` — the ticket has more than one PR (e.g. a `RUX` frontend PR plus its `{RELEASE_APP_REPO}` backend counterpart), **and** they do not all clear the gates: flag it when any one of them is gate-excluded while another is clean, so the user knows only part of the fix would ship. A multi-PR ticket whose PRs are all clean needs no block.
 - The ticket's own comments show an **open issue, failing test, unmet reporter feedback, or an irreversible/manual step** that needs a decision before merge (e.g. QA reported a failure after the PR was approved, a reporter said the fix still isn't working, a migration that cannot be rolled back)
