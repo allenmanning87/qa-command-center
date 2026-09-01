@@ -26,23 +26,21 @@ Phase 4 runs against the **`staging` branch** of `{RELEASE_APP_REPO}` — not a 
 
 If invoked from `/releases-merge`, the staging→main PR number and its green-CI status are already known. If invoked standalone, confirm with the user that Phase 3's staging PR CI is green before proceeding.
 
-### Scope — both tracks get a pre-fast-forward gate
+### Scope — Phase 4 is MT-only
 
-**RUX has the same pre-fast-forward gates as `{RELEASE_APP_REPO}`.** Each track validates its own `staging` branch on an automation site and runs the e2e suite before its `/fast-forward` is posted. The workflows differ; the gate does not.
+**Phase 4 applies to `{RELEASE_APP_REPO}` only. RUX runs no regression suite at any point — do not run one for it, and do not offer to.**
 
-| | MT (`{RELEASE_APP_REPO}`) | RUX |
-|---|---|---|
-| Build staging | (checked out by the deploy workflow) | `staging-build-and-archive.yml` in `{GITHUB_ORG}/RUX`, `branch=staging` → `s3://.../RUX/staging/staging.tar.gz` |
-| Deploy staging to automation | `deploy-production.yml`, `deploy-target="Deploy to automation sites only"`, `release-tag=staging` | `deploy-rux.yml`, `environment=staging`, `release-tag=staging` |
-| e2e suite | run inside `deploy-production.yml` | `release-e2e-automation.yml` (has `workflow_dispatch`) |
+| Track | Pre-`/fast-forward` gate |
+|---|---|
+| **MT** (`{RELEASE_APP_REPO}`) | `deploy-production.yml`, `deploy-target="Deploy to automation sites only"`, `release-tag=staging` → e2e inside that run → user's go-ahead |
+| **RUX** | **No Phase 4.** Staging PR CI green + **1 approving review** → user's go-ahead |
+| **ST** | No gate — ST releases are merged and tagged in Phase 3 |
 
-`deploy-production.yml` takes no RUX input, so it cannot validate a RUX build — **never pass it a RUX branch or tag.** RUX is gated by its own sequence above, not by the MT run.
+RUX enforces unit tests and lint through **pre-push git hooks**, so problems are caught before a PR exists; its post-deploy verification is a manual smoke check (open a new-UI URL, confirm it loads and login works). Never describe a RUX release as regression-verified, and never trigger `staging-build-and-archive.yml` / `deploy-rux.yml` / any e2e workflow as a "RUX Phase 4" — the only RUX build that matters is the *"Release and archive"* run that `/fast-forward` itself triggers (see `/releases-merge` step 4g-i).
 
-**Both `/fast-forward` gates must be satisfied independently.** A green MT regression never authorizes the RUX fast-forward, and vice versa. Run the gate for each track that has a release in flight, and ask for each authorization separately.
+`deploy-production.yml` takes no RUX input, so it cannot validate a RUX build — **never pass it a RUX branch or tag.**
 
-> **Both tracks' Phase 4 gates may run concurrently.** There is no ordering requirement here — kick off the MT regression and the RUX build → staging deploy → e2e in parallel to save wall-clock. The strict **ST → RUX → MT** serialization applies only to the **production** deploys in Phase 5 (`/releases-deploy`), where the two workflows contend for the shared production WireGuard peer.
-
-> **Confirm the RUX staging site directory before the first run.** `deploy-rux.yml`'s `site-directory` defaults to `rux_releases` (the production path). The staging/automation deploy targets a different directory — confirm the correct value with Arturo Rios / the RUX team rather than accepting the default, since the deploy repoints the shared `/mnt/efs/www/rux` symlink on whatever directory it is given.
+**Each track's `/fast-forward` is authorized separately.** A green MT regression never authorizes the RUX fast-forward. RUX typically reaches its authorization point well before MT, since it waits only on CI plus one review — ask for the RUX go-ahead as soon as that review lands rather than queuing it behind the MT regression.
 
 ---
 
@@ -104,7 +102,7 @@ Phase 4 passing is a **prerequisite** for `/fast-forward`, not authorization for
 
 **Do not post `/fast-forward` automatically.** Present a summary (staging PR CI green + Phase 4 regression green) and explicitly ask the user: **"Phase 4 regression passed on `staging`. Ready to post /fast-forward for `{RELEASE_APP_REPO}`?"** Do not proceed until the user says yes in the current conversation (e.g. "yes", "go ahead", "proceed"). GitHub PR approval status does NOT count as confirmation.
 
-Name the repo in the prompt. This authorization covers the **MT** `/fast-forward` only — if a RUX release is also in flight, run the RUX gate (build → staging deploy → e2e, per the Scope table) and ask for its `/fast-forward` separately. One "yes" never covers both tracks.
+Name the repo in the prompt. This authorization covers the **MT** `/fast-forward` only — if a RUX release is also in flight, its gate is staging CI green + 1 approving review (no regression run), and its `/fast-forward` is asked for separately. One "yes" never covers both tracks.
 
 Once the user authorizes, resume `/releases-merge` at step 4e (post `/fast-forward`, poll for merge + tag, then hand off to Phase 5 `/releases-deploy`).
 
@@ -121,13 +119,9 @@ Regression run (deploy-production.yml "automation sites only" @ staging): {concl
     e2e (suts-automation-production): {conclusion}
 
 Gate (MT / {RELEASE_APP_REPO}): [✓ PASSED — ready for /fast-forward pending user go-ahead] OR [⚠ FAILED — /fast-forward blocked]
-Gate (RUX): [✓ PASSED — ready for /fast-forward pending user go-ahead] OR [⚠ FAILED — /fast-forward blocked] OR [n/a — no RUX release today]
-    staging build:  {conclusion} — {run_url}
-    staging deploy: {conclusion} — {run_url}
-    e2e:            {conclusion} — {run_url}
 ```
 
-Include the RUX block only when a RUX release is in flight; omit it on MT-only days.
+There is no RUX line — Phase 4 is MT-only. RUX's gate (staging CI + 1 approving review) is tracked in `/releases-merge`, not here.
 
 If any job failed, include the failing job and step names so the user can investigate.
 
@@ -139,9 +133,8 @@ If any job failed, include the failing job and step names so the user can invest
 - The trigger uses the **plural** `"Deploy to automation sites only"` string — the current workflow input. (Renamed from the singular by ltc-deployment PR #62 / BLTE-23564, merged 2026-07-28; the singular no longer exists and will fail the `choice` input validation.)
 - The entire workflow run must conclude `success` **and** the e2e jobs must have actually run (not skipped) — a green `deploy-automation` with skipped e2e is **not** a pass. No expected-failure allowance in this phase.
 - Phase 4 passing does **not** authorize `/fast-forward` — the user must still explicitly authorize it (Step 4).
-- **Both tracks get a pre-fast-forward gate, via different workflows.** MT uses `deploy-production.yml` ("automation sites only" @ `staging`). RUX uses `staging-build-and-archive.yml` (build branch `staging`) → `deploy-rux.yml` (`environment=staging`, `release-tag=staging`) → `release-e2e-automation.yml`. Never pass a RUX branch or tag to `deploy-production.yml` — it has no RUX input.
-- A green gate on one track never authorizes the other track's `/fast-forward`. Satisfy and authorize each independently.
-- **The two Phase 4 gates may run concurrently** — no ordering requirement in this phase. Serialization (ST → RUX → MT) applies only to the Phase 5 production deploys.
+- **Phase 4 is MT-only.** RUX runs no regression suite — never trigger `staging-build-and-archive.yml`, `deploy-rux.yml`, or an e2e workflow as a "RUX Phase 4", and never offer to. RUX gates on staging CI green + 1 approving review. Never pass a RUX branch or tag to `deploy-production.yml` — it has no RUX input.
+- A green MT regression never authorizes the RUX `/fast-forward`. Authorize each track separately.
 - Never bypass or re-trigger past a failed regression without explicit user direction.
 - Never trigger this while a production `deploy-production.yml` run is already in progress (production deploys share a single WireGuard peer and must not overlap). If a run is in flight, wait for it to finish.
 - **Poll on an exact status match**, e.g. `[ "$(gh run view {id} --json status --jq '.status')" = "completed" ]`. A `grep -q "completed"` on the run output can match a step-level conclusion and exit while the run is still in progress, producing a false result.
