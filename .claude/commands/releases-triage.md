@@ -223,7 +223,9 @@ gh api graphql -f query='{
 
 Replace `REPO` with the repo name (e.g. `{RELEASE_APP_REPO}`, an ST repo) and `N` with the PR number.
 
-Evaluate four independent gates from the single response. A PR can fail more than one; report every gate it fails.
+Evaluate five gates from the single response. A PR can fail more than one; report every gate it fails.
+
+**Check Gate 5 (base targeting) first.** Gates 1–4 are computed by GitHub against the PR's declared base, so their results are only meaningful once the base is known to be right. If Gate 5 forces a retarget, re-query and re-evaluate Gates 1–4 before reporting anything.
 
 ### Gate 1 — Unresolved review comments (`reviewThreads`)
 
@@ -271,13 +273,49 @@ Individual checks with conclusion `SKIPPED` or `NEUTRAL` are also **not** failur
 
 > **`mergeable` can return `UNKNOWN`.** GitHub computes mergeability lazily — the first query after a push often returns `UNKNOWN` with `mergeStateStatus: UNKNOWN`. This is **not** a result. Wait a few seconds and re-query any PR that returns `UNKNOWN`, and only report a conflict once GitHub actually reports `CONFLICTING`. Never report `UNKNOWN` as either passing or failing.
 
-Also confirm `baseRefName` is what you expect (`staging` for `{RELEASE_APP_REPO}`, the repo default for ST). A wrong base is caught and auto-corrected in `/releases-merge`, but noting it in triage saves a surprise later.
+### Gate 5 — Base branch targeting (`baseRefName`)
 
-> Note that a PR can be `APPROVED` with failing CI, have green CI with merge conflicts, or be perfectly clean but sitting in draft — the gates are independent. Check all four every time.
+**A wrong base invalidates every other gate on this PR.** GitHub computes `mergeable`, `mergeStateStatus` and `reviewDecision` against whatever base the PR currently declares. If that base is wrong, a `CLEAN`/`MERGEABLE` result only proves the branch merges into a branch it was never going to merge into — it says nothing about the branch it will actually be merged into. So this gate runs **before** you trust Gates 1–4, and a base correction requires **re-running Gates 1–4** afterward.
+
+Determine the expected base per repo class:
+
+| Repo class | Expected `baseRefName` |
+|---|---|
+| `{RELEASE_APP_REPO}` (MT) | `staging` |
+| `RUX` | `staging` |
+| ST (any other repo) | that repo's **default branch** — look it up, never assume: `gh repo view {GITHUB_ORG}/{repo} --json defaultBranchRef --jq '.defaultBranchRef.name'` |
+
+> ST default branches are **not** uniform — observed values include `master`, `production-master` and `main` across `admin`, `boonecounty`, `glendale`, `littlerock` and `mountainvillage`. Query each repo; do not carry an answer over from another ST repo or from a previous release.
+
+**If `baseRefName` matches the expected base** → passes, no mention needed.
+
+**If it does not match**, correct it during triage and re-gate:
+
+1. Retarget the PR to the expected base:
+   ```bash
+   gh pr edit {number} --repo {GITHUB_ORG}/{repo} --base {expected_base}
+   ```
+2. **Re-query Gates 1–4** on the retargeted PR. Mergeability is recomputed lazily, so allow a few seconds and treat `UNKNOWN` per the note above.
+3. Report what the retarget revealed:
+   - **Still `CLEAN`/`MERGEABLE`** → flag `⚠ WRONG BASE — retargeted {old} → {new}, re-gated clean`. The PR stays in the releasable set; the line is there so the user knows the base was changed on their behalf.
+   - **Now `CONFLICTING`/`DIRTY`** → the wrong base was **hiding a conflict**. Flag `⚠ MERGE CONFLICTS — needs rebase (revealed by base correction: {old} → {new})` and exclude the PR. Report `behind_by` and the conflicting files so the user can brief the author:
+     ```bash
+     gh api repos/{GITHUB_ORG}/{repo}/compare/{expected_base}...{headRefName} --jq '{ahead_by,behind_by,status}'
+     gh api repos/{GITHUB_ORG}/{repo}/pulls/{number}/files --jq '[.[].filename]'
+     ```
+     Name the PR author so the user knows who to chase. Do **not** attempt the rebase yourself — a diverged branch on a core file needs the author's judgment about how to resolve.
+   - **Now `BEHIND`** → apply the repo-specific `BEHIND` rule in Gate 4 (hard blocker for RUX, otherwise note only).
+4. Leave the corrected base in place even when the PR ends up excluded. Reverting to the wrong base would re-hide the problem and make the next run's gates untrustworthy again.
+
+**Never leave a wrong base for `/releases-merge` to auto-correct.** That skill does correct it, but by then the release list is closed and a revealed conflict becomes a mid-merge stop rather than a grooming-time decision. Catching it here is the entire point of the gate.
+
+> Real failure this gate exists to prevent (2026-09-08, BLTE-21222 / `boonecounty#811`): the PR targeted `staging` while the repo default was `production-master`. Triage reported it `CLEAN` — true against `staging` — and noted the base only as a cosmetic "auto-corrected later" aside. At merge time the retarget exposed a conflict in `app/framework.php` with the branch **146 commits behind** `production-master`, halting Phase 3 and forcing the ticket out of the release after the list had been closed and the story written.
+
+> Note that a PR can be `APPROVED` with failing CI, have green CI with merge conflicts, or be perfectly clean but sitting in draft — the gates are independent. Check all five every time, and re-check 1–4 after any base correction.
 
 ### Result
 
-A PR that passes all four gates needs no mention at all; it counts toward the clean total and appears in the Dependencies list.
+A PR that passes all five gates needs no mention at all; it counts toward the clean total and appears in the Dependencies list. (A PR whose base had to be corrected but then re-gated clean is the one exception: it stays in the releasable set but still gets a `⚠ WRONG BASE` line, so the user knows a change was made on their behalf.)
 
 **Important:** PRs failing **any** gate should be omitted from the Jira story's PR list in Step 6, and should NOT be merged in Phase 3, unless the user explicitly overrides. Note them prominently in the Step 5 report so the user can notify the developer.
 
@@ -377,6 +415,7 @@ A request gets a full block **only if it needs action**. Flag it if **any** of t
 - `⚠ NOT APPROVED` (only when the merge is `BLOCKED`) / `⚠ CHANGES REQUESTED` — Gate 2 (Step 3.5b)
 - `⚠ CI FAILED` / `⚠ CI PENDING` — Gate 3 (Step 3.5b)
 - `⚠ MERGE CONFLICTS` / `⚠ DRAFT PR` / `⚠ BEHIND BASE — needs rebase by developer (RUX)` — Gate 4 (Step 3.5b)
+- `⚠ WRONG BASE` — Gate 5 (Step 3.5b), whether the retarget re-gated clean or revealed a conflict
 - `⚠ MT MIGRATION — will be skipped by /releases-merge` — Step 3.6b (a `businesstaskdata` reference, or an index add on `businesstask`/`businesstaskdata`/`transactions`)
 - `⚠ {APP_REPO} STAGING AHEAD OF MAIN` — Step 3.6c (blocks that repo's merges in `/releases-merge` Step 2)
 - `⛔ HELD` by the blackout gate (Step 3.8)
@@ -456,12 +495,13 @@ If any identity fails to balance, **re-derive from the Step 2 ticket list before
 - If the Jira API returns an error for a ticket key, note it rather than skipping the ticket.
 - Normalize Jira keys to uppercase.
 - Never guess a PR URL — only report one that was found in a comment.
-- **Four independent PR gates** (Step 3.5b): unresolved review comments, approval state, CI/unit tests, and mergeability. Check all four on every PR and report every gate a PR fails. A green CI run does not imply approval, an approval does not imply green CI, and neither one tells you the branch still merges cleanly.
+- **Five PR gates** (Step 3.5b): base targeting, unresolved review comments, approval state, CI/unit tests, and mergeability. Check all five on every PR and report every gate a PR fails. A green CI run does not imply approval, an approval does not imply green CI, and neither one tells you the branch still merges cleanly.
+- **Base targeting is checked first, and a correction invalidates the other gates.** GitHub computes mergeability, merge state and review decision against the PR's declared base. A PR pointing at the wrong base can report `CLEAN`/`MERGEABLE` while being unmergeable into the branch it will actually merge into — so retarget it in triage (Gate 5), then re-run Gates 1–4 against the corrected base. Never pass a wrong base downstream for `/releases-merge` to fix: by then the release list is closed, and a revealed conflict halts Phase 3 instead of being a grooming decision.
 - **A merge conflict is a hard blocker.** `mergeable == CONFLICTING` means the PR cannot be released until the developer rebases, regardless of approvals, green CI, and resolved comments. Nothing else in triage surfaces this, so never skip Gate 4. Treat `mergeable == UNKNOWN` as "not yet computed" — re-query rather than reporting it either way.
 - **A missing approver is only a blocker when the merge is `BLOCKED`.** Some repos have no branch-protection rule requiring review, so `reviewDecision: null` there is normal and must not be flagged.
 - **No CI ≠ failed CI.** ST repos have no GitHub Actions workflows, so `statusCheckRollup` comes back `null` for them. That is the expected state — never flag it, and never report it as a missing or skipped test run. Only an actual `FAILURE`/`ERROR` conclusion counts against a PR; `SKIPPED` and `NEUTRAL` checks don't either.
 - **GitHub is authoritative for approval; the PR page is authoritative for outdated bot threads.** A Jira comment claiming code review passed does not clear Gate 2 — only a GitHub `APPROVED` state does. Conversely, outdated bot review threads can read as unresolved in the API while showing resolved on the PR page; flag them but say so, and defer to the user's read of the page.
-- **RUX is in scope** (as of 2026-08-25): `{GITHUB_ORG}/RUX` PRs are gated, reported, listed in Dependencies, and given review tabs exactly like `{RELEASE_APP_REPO}` PRs. There is no repo-based exclusion any more — the only exclusions are the four gates (Step 3.5b), the blackout hold (Step 3.8), and no-PR-found (Step 3.5).
+- **RUX is in scope** (as of 2026-08-25): `{GITHUB_ORG}/RUX` PRs are gated, reported, listed in Dependencies, and given review tabs exactly like `{RELEASE_APP_REPO}` PRs. There is no repo-based exclusion any more — the only exclusions are the five gates (Step 3.5b), the blackout hold (Step 3.8), and no-PR-found (Step 3.5).
 - **Watch the RUX ↔ `{RELEASE_APP_REPO}` pair**: on RUX sites, RUX serves the business center and `{RELEASE_APP_REPO}` serves `/backend/admin/`, so one ticket often has a PR in each. Releasing only one half ships a partial fix — flag any ticket whose paired PRs are split by the gates.
 - **SUTS handling**: SUTS-tagged tickets (detected in Step 3.7) are **not excluded** — they are included and labeled with `_(SUTS)_` on the PR line.
 - **Release blackout**: During the blackout window (computed in Pre-flight), only **P0/P1** tickets are eligible — all others are HELD (Step 3.8), excluded from the Step 6 Dependencies list and from Phase 3 merging unless the user explicitly overrides. Outside the window the gate is a no-op. Always show the computed window in the report header; show a ticket's priority only when it is HELD (or otherwise flagged).
