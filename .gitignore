@@ -6,3 +6,10 @@ data/app.db
 server.log
 docs/designs/wip-acceptance-criteria.md
 .claude/XML Samples/
+
+# Private skills — these live in the local-only neumo-knowledge repo.
+# NOTE: ~/.claude/commands is a SYMLINK to .claude/commands here, so anything
+# dropped into the user-level commands dir lands in this PUBLIC repo by default.
+# Any skill containing tenant names, schema names, or customer data must be
+# listed here (or kept in neumo-knowledge) before it is written.
+.claude/commands/kb-index.md

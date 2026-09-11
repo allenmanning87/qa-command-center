@@ -78,3 +78,46 @@ New viz types go into `charts.js` first, then get called from the view. Never co
 | `makeSortable(container, items, { renderRow, onReorder })` | Any single-container drag-to-reorder list |
 
 Renders `.column-row[draggable]` rows with a drag handle. Drag state is closure-local — multiple lists on the same page are independent. Caller owns persist and re-render in `onReorder`. For multi-container drag (e.g., kanban cards moving between columns), implement directly in the view.
+
+
+---
+
+## ⚠️ This repository is PUBLIC
+
+`github.com/allenmanning87/qa-command-center` is public by design — it supports free
+collaboration and serves as a portfolio. That makes every commit a publication.
+
+**`~/.claude/commands` is a symlink to `.claude/commands` in this repo.** Anything dropped into
+the user-level commands directory lands in the public repo *by default*. Privacy here is opt-in,
+not automatic.
+
+### Placeholder convention — use it for every environment-specific value
+
+Skills describe the process; `.env` supplies the specifics. Never hardcode a real value in a
+skill file, even mid-sentence alongside a placeholder — that mixing is exactly how the four
+findings below got published.
+
+| Never hardcode | Use |
+|---|---|
+| Production/automation site names | `{PROD_SITE_MT}`, `{AUTOMATION_SITE_MT}`, `{QA_SITE}` … |
+| VPN endpoints, internal IPs | `{WIREGUARD_SERVER}`, `{DEPLOY_TARGET_HOST}` |
+| S3 buckets | `{ARTIFACT_BUCKET}` |
+| Jira/GitHub org | `{JIRA_BASE_URL}`, `{GITHUB_ORG}` |
+| Customer / tenant names | `{tenant-a}`, or "an ST tenant repo" |
+| Coworker names | a role — "the RUX lead", "a senior engineer" |
+
+Add each new placeholder to `.env.example` with a safe dummy value. `go-live-testing-rux.md` is
+the reference implementation — it follows this convention throughout.
+
+### What is fine to publish
+
+Internal repo names (`MRNexus`, `RUX`), Jira project keys and ticket IDs, DB table names, CI
+workflow detail, the release process itself, and lessons-learned narratives. These are the
+substance of the portfolio and carry no security value to an outsider. **Redact proper nouns,
+never ideas** — an incident story reads just as well with `{tenant-a}` as with a county name.
+
+### Private skills
+
+Skills containing tenant lists, schema names, or customer data belong in the local-only
+`neumo-knowledge` repo (`KB_ROOT` in `.env`), not here. If one must live in this directory,
+add it to `.gitignore` **before** writing it. `kb-index.md` is handled this way.

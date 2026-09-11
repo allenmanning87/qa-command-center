@@ -126,7 +126,7 @@ Output: `✓ {repo} PR #{N} ({JIRA}) merged → v{new_version} released`
 
 ## Step 4 — Process app-repo PRs ({RELEASE_APP_REPO} and RUX)
 
-**Run this step once per app repo that has PRs in today's release.** Substitute `{APP_REPO}` = `{RELEASE_APP_REPO}` for the MT track and `RUX` for the RUX track. The steps are identical — Arturo Rios confirmed (training call, 2026-08-25) that the RUX release process is deliberately homologated with the MRNexus one, so there is no separate procedure to learn.
+**Run this step once per app repo that has PRs in today's release.** Substitute `{APP_REPO}` = `{RELEASE_APP_REPO}` for the MT track and `RUX` for the RUX track. The steps are identical — a senior engineer confirmed (training call, 2026-08-25) that the RUX release process is deliberately homologated with the MRNexus one, so there is no separate procedure to learn.
 
 Only proceed for a given repo if that repo's Step 2 staging health check passed.
 
@@ -140,7 +140,7 @@ Strict **ST → RUX → MT** sequencing applies **only** to the Phase 5 producti
 ```
 gh pr view {number} --repo {GITHUB_ORG}/{APP_REPO} --json baseRefName,state
 ```
-- If `state` is already `MERGED`: skip with a note. (Common on RUX — Arturo often merges his own team's PRs to `staging` ahead of the release; an already-merged PR is expected, not an error.)
+- If `state` is already `MERGED`: skip with a note. (Common on RUX — the owning team often merges its own PRs to `staging` ahead of the release; an already-merged PR is expected, not an error.)
 - If `baseRefName` is not `staging`: flag as "expected base=staging, got {branch} — needs manual review", skip it.
 
 ### 4b — Merge each feature PR into staging
@@ -232,7 +232,7 @@ Each track's gate is independent and authorized separately — a green MT regres
 
 - **If CI is not green:** report the failing checks with URLs so the user can send them to the developer. Do **not** run Phase 4 and do **not** post `/fast-forward`. Stop.
 - **If CI is green — MT track:** **do not post the `/fast-forward` comment automatically, and do not ask for `/fast-forward` go-ahead yet.** Hand off to Phase 4: invoke the `/releases-regression` skill. Phase 4 triggers the regression run, polls it to completion, and gates `/fast-forward` on the entire run concluding `success`.
-- **If CI is green — RUX track:** **skip Phase 4 entirely.** Check `reviewDecision`: if it is not `APPROVED`, report that the release PR needs one approving review (Arturo requests it from Osvaldo, Sebastian, or Israel) and name that as the only remaining blocker. Once it reads `APPROVED`, ask the user for the RUX `/fast-forward` go-ahead directly.
+- **If CI is green — RUX track:** **skip Phase 4 entirely.** Check `reviewDecision`: if it is not `APPROVED`, report that the release PR needs one approving review (requested from the RUX team) and name that as the only remaining blocker. Once it reads `APPROVED`, ask the user for the RUX `/fast-forward` go-ahead directly.
   - **Phase 4 fails** → `/fast-forward` is blocked. Report the failing jobs/steps with the run URL. Stop.
   - **Phase 4 passes** → Phase 4 presents the `/fast-forward` go-ahead prompt (staging CI green + regression green) and waits for the user's explicit authorization before control returns here at step 4e. GitHub PR approval status does NOT count as confirmation — the user must explicitly authorize in the current conversation.
 
@@ -245,7 +245,7 @@ MSYS_NO_PATHCONV=1 gh pr comment {staging_pr_number} --repo {GITHUB_ORG}/{APP_RE
 
 **Authorize each track separately.** A go-ahead for the MT fast-forward is **not** a go-ahead for RUX. Ask for each one explicitly, naming the repo, and post only the comment the user authorized.
 
-> **RUX needs one approving review on the release PR** before `/fast-forward`. Arturo Rios requests it from Osvaldo, Sebastian, or Israel. One approval is the norm — check `reviewDecision` is `APPROVED` before posting.
+> **RUX needs one approving review on the release PR** before `/fast-forward`. It is requested from the RUX team. One approval is the norm — check `reviewDecision` is `APPROVED` before posting.
 >
 > **`{RELEASE_APP_REPO}` does not.** The MT release PR proceeds on **CI-green alone** — do not treat `reviewDecision: REVIEW_REQUIRED` or `mergeStateStatus: BLOCKED` on the MT staging → main PR as a blocker, and do not wait for a reviewer. Once its CI is green, go straight to Phase 4 (`/releases-regression`) exactly as before RUX existed. The GitHub approval requirement is RUX-only.
 >
@@ -283,7 +283,7 @@ The RUX `/fast-forward` triggers `on-push-default-branch.yml` (*"Release and arc
 | `semantic-release` | Cuts the `v22.x.y` tag |
 | `add-jira-fix-version` | Creates the Jira release and stamps **Fix Version** on every ticket in the PR title |
 | `Build application` | `npm install` → **Node Build** → compress `.tar.gz` |
-| `Archive build artifact` | `aws s3 cp v{tag}.tar.gz s3://govos-infrastructure-artifacts-l/RUX/releases/` |
+| `Archive build artifact` | `aws s3 cp v{tag}.tar.gz s3://{ARTIFACT_BUCKET}/RUX/releases/` |
 
 **That final S3 upload is the artifact `deploy-rux.yml` downloads.** Until it completes, the deploy will fail with "no artifact" — the tag will already exist, which makes it look like a tagging problem when it is really a timing one.
 
@@ -331,7 +331,7 @@ RUX Release:
 ✓ PRs merged into staging: #{N} ({JIRA}), #{N} ({JIRA}), ...
 ✓ Staging → Main PR: {URL}
 CI: [✓ all checks green] OR [⚠ failing: {check name} — {url}] OR [⏳ still running — check manually]
-Approval: [✓ approved by {login}] OR [⚠ needs 1 approving review — ask Osvaldo / Sebastian / Israel]
+Approval: [✓ approved by {login}] OR [⚠ needs 1 approving review — ask the RUX team]
 Tag: [v{version}] OR [pending /fast-forward]
 (No Phase 4 line — RUX runs no regression suite.)
 

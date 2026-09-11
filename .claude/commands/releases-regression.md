@@ -46,7 +46,7 @@ RUX enforces unit tests and lint through **pre-push git hooks**, so problems are
 
 ## Step 1 — Trigger the regression run
 
-Trigger `deploy-production.yml` in **"Deploy to automation sites only"** mode against the `staging` branch. This mode checks out `staging`, deploys + migrates both automation sites (`blt1-automation-production` + `colorado-automation-production`), and runs the e2e regression suite against them (`blt1-automation-production` + `suts-automation-production`), then stops — it does **not** deploy to production, staging, or qa (those jobs remain gated to full-production only).
+Trigger `deploy-production.yml` in **"Deploy to automation sites only"** mode against the `staging` branch. This mode checks out `staging`, deploys + migrates both automation sites (`{RELEASE_MT_TENANT}` + `{RELEASE_SUTS_SITE_DIR}`), and runs the e2e regression suite against them (`{RELEASE_MT_TENANT}` + `{RELEASE_SUTS_TENANT}`), then stops — it does **not** deploy to production, staging, or qa (those jobs remain gated to full-production only).
 
 ```bash
 gh workflow run deploy-production.yml \
@@ -115,8 +115,8 @@ Phase 4 Complete — {YYYY-MM-DD}
 
 Regression run (deploy-production.yml "automation sites only" @ staging): {conclusion} — {run_url}
     deploy-automation: {conclusion}
-    e2e (blt1-automation-production): {conclusion}
-    e2e (suts-automation-production): {conclusion}
+    e2e ({RELEASE_MT_TENANT}): {conclusion}
+    e2e ({RELEASE_SUTS_TENANT}): {conclusion}
 
 Gate (MT / {RELEASE_APP_REPO}): [✓ PASSED — ready for /fast-forward pending user go-ahead] OR [⚠ FAILED — /fast-forward blocked]
 ```

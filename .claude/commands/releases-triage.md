@@ -285,7 +285,7 @@ Determine the expected base per repo class:
 | `RUX` | `staging` |
 | ST (any other repo) | that repo's **default branch** — look it up, never assume: `gh repo view {GITHUB_ORG}/{repo} --json defaultBranchRef --jq '.defaultBranchRef.name'` |
 
-> ST default branches are **not** uniform — observed values include `master`, `production-master` and `main` across `admin`, `boonecounty`, `glendale`, `littlerock` and `mountainvillage`. Query each repo; do not carry an answer over from another ST repo or from a previous release.
+> ST default branches are **not** uniform — observed values include `master`, `production-master` and `main` across `admin` and several ST tenant repos. Query each repo; do not carry an answer over from another ST repo or from a previous release.
 
 **If `baseRefName` matches the expected base** → passes, no mention needed.
 
@@ -309,7 +309,7 @@ Determine the expected base per repo class:
 
 **Never leave a wrong base for `/releases-merge` to auto-correct.** That skill does correct it, but by then the release list is closed and a revealed conflict becomes a mid-merge stop rather than a grooming-time decision. Catching it here is the entire point of the gate.
 
-> Real failure this gate exists to prevent (2026-09-08, BLTE-21222 / `boonecounty#811`): the PR targeted `staging` while the repo default was `production-master`. Triage reported it `CLEAN` — true against `staging` — and noted the base only as a cosmetic "auto-corrected later" aside. At merge time the retarget exposed a conflict in `app/framework.php` with the branch **146 commits behind** `production-master`, halting Phase 3 and forcing the ticket out of the release after the list had been closed and the story written.
+> Real failure this gate exists to prevent (2026-09-08, BLTE-21222 / `{tenant-a}#811`): the PR targeted `staging` while the repo default was `production-master`. Triage reported it `CLEAN` — true against `staging` — and noted the base only as a cosmetic "auto-corrected later" aside. At merge time the retarget exposed a conflict in `app/framework.php` with the branch **146 commits behind** `production-master`, halting Phase 3 and forcing the ticket out of the release after the list had been closed and the story written.
 
 > Note that a PR can be `APPROVED` with failing CI, have green CI with merge conflicts, or be perfectly clean but sitting in draft — the gates are independent. Check all five every time, and re-check 1–4 after any base correction.
 

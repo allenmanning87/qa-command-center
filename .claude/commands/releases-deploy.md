@@ -39,8 +39,8 @@ Run only the track(s) that produced a tag in Phase 3.
 But both build the **same WireGuard tunnel with the same peer identity** to reach the same host:
 
 - Same secret: `GOVOSGITBOT_WIREGUARD_PEER_PRIVATE_KEY` (from the shared `production` environment)
-- Same single peer address: `WIREGUARD_PEER_ADDRESS = 172.18.26.2/32`
-- Same interface name (`wg0`), same server (`13.57.239.19:51820`), same target host (`172.18.2.251`)
+- Same single peer address: `WIREGUARD_PEER_ADDRESS = {WIREGUARD_PEER_ADDRESS}`
+- Same interface name (`wg0`), same server (`{WIREGUARD_SERVER}`), same target host (`{DEPLOY_TARGET_HOST}`)
 
 A WireGuard server binds one peer public key to one allowed IP. When two runners present that same identity from different source addresses, the server's endpoint for that peer flaps between them and one or both tunnels drop mid-run. Because the drop lands in the middle of SSH work, a deploy can fail **partway through** — artifact copied but symlink not repointed, or migrations half-applied. That is a far worse state than either failure alone.
 
@@ -82,8 +82,8 @@ Each track still has its **own** explicit go-ahead gate (Step 4a for RUX, Step 1
 
 Phase 5 uses a single workflow — **`deploy-production.yml`** in `{GITHUB_ORG}/{RELEASE_DEPLOY_REPO}` — which has two modes:
 
-1. **"Deploy to automation sites only"** — deploys + migrates the automation sites (`blt1-automation-production` and `colorado-automation-production`, which share a database), runs the e2e suite against them, and stops. A safe rehearsal; this is also the mode Phase 4 (`/releases-regression`) uses against the `staging` branch.
-2. **"Deploy to full production"** — deploys + migrates the automation sites, runs the **e2e regression suite as a blocking tollgate** against both automation sites (`blt1-automation-production` and `suts-automation-production`), and **only if both e2e gates pass**, deploys + migrates every production site (`nexus8`, `nexus8-api`, `govos-blt-colorado`) together in the same run.
+1. **"Deploy to automation sites only"** — deploys + migrates the automation sites (`{RELEASE_MT_TENANT}` and `{RELEASE_SUTS_SITE_DIR}`, which share a database), runs the e2e suite against them, and stops. A safe rehearsal; this is also the mode Phase 4 (`/releases-regression`) uses against the `staging` branch.
+2. **"Deploy to full production"** — deploys + migrates the automation sites, runs the **e2e regression suite as a blocking tollgate** against both automation sites (`{RELEASE_MT_TENANT}` and `{RELEASE_SUTS_TENANT}`), and **only if both e2e gates pass**, deploys + migrates every production site (`{RELEASE_MT_PROD_SITE_DIR}`, `{PROD_SITE_API}`, `{RELEASE_SUTS_PROD_SITE_DIR}`) together in the same run.
 
 This e2e gate runs the **same suite as Phase 4 (`/releases-regression`)**, but here it runs against the real release **tag** (on production-grade automation sites) as a hard gate before production sites deploy. Phase 4 runs the same suite earlier, against the `staging` **branch**, before `/fast-forward` — so a regression is caught before staging reaches `main`. The two runs are complementary: Phase 4 guards `main`, this Phase 5 gate guards production. Both must pass in their respective phases.
 
@@ -162,17 +162,17 @@ gh run view {run_id} --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} --json jobs --jq 
 - **`deploy-automation` or `deploy-production` failed** → report the failing job and step names prominently and **stop**. Note that if `deploy-production` failed mid-run, production sites may be partially deployed — surface this clearly.
 - `cancelled` → report and stop.
 
-> **Note on sites deployed.** `deploy-production.yml` deploys to the automation sites (`blt1-automation-production`, `colorado-automation-production`) and the live production sites (`nexus8`, `nexus8-api`, `govos-blt-colorado`). It **also** deploys + migrates the staging `nexus8` site (plus checkout-only `suts-staging` / `sjc-staging`) and the `munirevs-mrnexus` QA site via its built-in `deploy-staging` and `deploy-qa-munirevs` jobs, which run after `deploy-production` succeeds. It does **not** deploy to the `blt1-automation` staging site — that is the sole remaining site handled by Step 3 below.
+> **Note on sites deployed.** `deploy-production.yml` deploys to the automation sites (`{RELEASE_MT_TENANT}`, `{RELEASE_SUTS_SITE_DIR}`) and the live production sites (`{RELEASE_MT_PROD_SITE_DIR}`, `{PROD_SITE_API}`, `{RELEASE_SUTS_PROD_SITE_DIR}`). It **also** deploys + migrates the staging `{RELEASE_MT_PROD_SITE_DIR}` site (plus checkout-only staging mirrors) and the `{QA_SITE}` QA site via its built-in `deploy-staging` and `deploy-qa-munirevs` jobs, which run after `deploy-production` succeeds. It does **not** deploy to the `blt1-automation` staging site — that is the sole remaining site handled by Step 3 below.
 
 ---
 
 ## Step 3 — Deploy to MT staging (`{RELEASE_BLT1_AUTOMATION_STAGING}` only)
 
-`deploy-production.yml` now deploys + migrates staging `nexus8` itself (via its built-in `deploy-staging` job, which runs after `deploy-production` succeeds), so **do not** legacy-deploy `{RELEASE_MT_PROD_SITE_DIR}` here — doing so would deploy and migrate `nexus8` a second time in the same release. The only staging site the production workflow does **not** cover is `{RELEASE_BLT1_AUTOMATION_STAGING}`, so after the full-production deploy reaches a success state, deploy the same release tag to just that one site using the legacy workflow (this keeps its staging mirror in sync with production):
+`deploy-production.yml` now deploys + migrates staging `{RELEASE_MT_PROD_SITE_DIR}` itself (via its built-in `deploy-staging` job, which runs after `deploy-production` succeeds), so **do not** legacy-deploy `{RELEASE_MT_PROD_SITE_DIR}` here — doing so would deploy and migrate `{RELEASE_MT_PROD_SITE_DIR}` a second time in the same release. The only staging site the production workflow does **not** cover is `{RELEASE_BLT1_AUTOMATION_STAGING}`, so after the full-production deploy reaches a success state, deploy the same release tag to just that one site using the legacy workflow (this keeps its staging mirror in sync with production):
 
 1. `{RELEASE_BLT1_AUTOMATION_STAGING}` (e.g. `blt1-automation`)
 
-> **Skipped:** `{RELEASE_MT_PROD_SITE_DIR}` (e.g. `nexus8`) — now handled by `deploy-production.yml`'s `deploy-staging` job. (Historical note: prior to the BLTE-22905 `deploy-production.yml` change, Step 3 legacy-deployed both `nexus8` and `blt1-automation`.)
+> **Skipped:** `{RELEASE_MT_PROD_SITE_DIR}` (e.g. `{RELEASE_MT_PROD_SITE_DIR}`) — now handled by `deploy-production.yml`'s `deploy-staging` job. (Historical note: prior to the BLTE-22905 `deploy-production.yml` change, Step 3 legacy-deployed both `{RELEASE_MT_PROD_SITE_DIR}` and `blt1-automation`.)
 
 For the site directory `{SITE}` (`{RELEASE_BLT1_AUTOMATION_STAGING}`):
 
@@ -221,7 +221,7 @@ Ask: **"Ready to deploy RUX `{rux_tag}` to production?"** Wait for an explicit y
 
 ### 4b — REQUIRED: confirm "Release and archive" has completed
 
-**RUX must be built before it can be deployed** — unlike MRNexus (PHP, checked out directly on the server), RUX is React/TypeScript and ships as a prebuilt bundle. The `/fast-forward` triggers `on-push-default-branch.yml` in `{GITHUB_ORG}/RUX` (*"Release and archive"*), whose `Build application` → `Archive build artifact` jobs produce and upload `s3://govos-infrastructure-artifacts-l/RUX/releases/{tag}.tar.gz`. **That is the artifact this deploy downloads.**
+**RUX must be built before it can be deployed** — unlike MRNexus (PHP, checked out directly on the server), RUX is React/TypeScript and ships as a prebuilt bundle. The `/fast-forward` triggers `on-push-default-branch.yml` in `{GITHUB_ORG}/RUX` (*"Release and archive"*), whose `Build application` → `Archive build artifact` jobs produce and upload `s3://{ARTIFACT_BUCKET}/RUX/releases/{tag}.tar.gz`. **That is the artifact this deploy downloads.**
 
 Verify the run for this tag concluded `success` before triggering the deploy:
 
@@ -248,7 +248,7 @@ gh workflow run deploy-rux.yml \
   --field site-directory=rux_releases
 ```
 
-- `release-tag` must be the exact RUX tag from Phase 3 (e.g. `v22.11.4`). In production mode this selects `s3://govos-infrastructure-artifacts-l/RUX/releases/{tag}.tar.gz`.
+- `release-tag` must be the exact RUX tag from Phase 3 (e.g. `v22.11.4`). In production mode this selects `s3://{ARTIFACT_BUCKET}/RUX/releases/{tag}.tar.gz`.
 - `site-directory` is `rux_releases` (the workflow default). The deploy extracts there and repoints the shared `/mnt/efs/www/rux` symlink.
 
 Find the run ID and report the URL:
@@ -276,7 +276,7 @@ gh run view {run_id} --repo {GITHUB_ORG}/{RELEASE_DEPLOY_REPO} --json jobs --jq 
 - Any other `failure` (`Download release file from S3`, `SCP build artifact`, `Extract tar.gz`, `Update symlink`, WireGuard/SSH setup) → a real failure. Report the failing job and step names with the run URL and stop. If it failed **after** the extract but before/during the symlink update, the site may still be serving the previous release — say so plainly rather than assuming either state.
 - `cancelled` → report and stop.
 
-> Arturo Rios (training call, 2026-08-25) called out the Jira-version failure specifically: a red X on a RUX deploy frequently does **not** mean the deploy failed. Always read which step failed before reporting a RUX deploy as broken.
+> A senior engineer (training call, 2026-08-25) called out the Jira-version failure specifically: a red X on a RUX deploy frequently does **not** mean the deploy failed. Always read which step failed before reporting a RUX deploy as broken.
 
 ### 4e — Confirm Fix Versions in Jira
 
@@ -284,7 +284,7 @@ On success, each ticket in the RUX release should show the new version in its **
 
 ### 4f — Smoke check the new UI
 
-**There is no e2e gate on the RUX deploy** — unlike the MT deploy, `deploy-rux.yml` runs no test suite. Arturo Rios (training call part 2, 2026-08-25) explained why: RUX enforces unit tests and lint through a **pre-push git hook**, so problems are caught before a PR is ever opened rather than at deploy time.
+**There is no e2e gate on the RUX deploy** — unlike the MT deploy, `deploy-rux.yml` runs no test suite. A senior engineer (training call part 2, 2026-08-25) explained why: RUX enforces unit tests and lint through a **pre-push git hook**, so problems are caught before a PR is ever opened rather than at deploy time.
 
 That makes the post-deploy check manual and worth doing every time. Open a new-UI business center URL, confirm it loads and you can log in, and watch for console errors. Report what you checked.
 
@@ -313,16 +313,16 @@ RUX — release tag: {rux_tag}          (deployed first)
 ✓ Release and archive (RUX on-push-default-branch.yml) — {conclusion} — {run_url}
     semantic-release / add-jira-fix-version / Build application / Archive build artifact
 ✓ RUX production deploy — {conclusion} — {run_url}
-    artifact: s3://govos-infrastructure-artifacts-l/RUX/releases/{rux_tag}.tar.gz
+    artifact: s3://{ARTIFACT_BUCKET}/RUX/releases/{rux_tag}.tar.gz
     Jira fix versions: [✓ set] OR [⚠ step failed — set manually (deploy still succeeded)]
     smoke check: [✓ new UI loads + login OK] OR [⚠ {what you saw}]
 
 MT ({RELEASE_APP_REPO}) — release tag: {tag}
 ✓ Full production deploy — {conclusion} — {run_url}
-    e2e gate (blt1-automation-production): {conclusion}
-    e2e gate (suts-automation-production): {conclusion}
-    production sites (nexus8, nexus8-api, govos-blt-colorado): deployed & migrated
-    staging nexus8 + qa munirevs-mrnexus: deployed & migrated (via deploy-production.yml built-in jobs)
+    e2e gate ({RELEASE_MT_TENANT}): {conclusion}
+    e2e gate ({RELEASE_SUTS_TENANT}): {conclusion}
+    production sites ({RELEASE_MT_PROD_SITE_DIR}, {PROD_SITE_API}, {RELEASE_SUTS_PROD_SITE_DIR}): deployed & migrated
+    staging {RELEASE_MT_PROD_SITE_DIR} + qa {QA_SITE}: deployed & migrated (via deploy-production.yml built-in jobs)
 ✓ MT staging deploy ({RELEASE_BLT1_AUTOMATION_STAGING} @ staging) — {conclusion} — {run_url}
 ```
 
@@ -332,7 +332,7 @@ Omit a track's section entirely if it had no tag today. If any job failed, inclu
 
 ## Post-release — ticket status convention
 
-Per Arturo Rios (training call, 2026-08-25), released tickets are **not** closed by the release process:
+Per team convention (training call, 2026-08-25), released tickets are **not** closed by the release process:
 
 - Leave the status at **Ready for Release** — it isn't truly closed until verified in production.
 - Set the **resolution** to reflect production testing (e.g. "tested in production").
@@ -347,10 +347,10 @@ Do not transition released tickets to Closed as part of Phase 5. Flag it if the 
 - **Deploy order is ST → RUX → MT.** Only the RUX → MT leg is a hard constraint (shared WireGuard peer) — never start the MT deploy until the RUX deploy has reached a terminal conclusion. RUX goes first because it finishes in under 40 seconds while MT takes 20+ minutes. **ST is not a blocker for either app repo**: it is run manually by the user, deploys independently, and must never be waited on or confirmed before triggering RUX or MT.
 - **Step numbers do not match execution order.** Step 4 (RUX) runs before Steps 1–3 (MT). See "Execution order vs step numbering" near the top.
 - The standard flow is a single "Deploy to full production" trigger, gated on explicit user go-ahead obtained **before** triggering. Never trigger full production without that go-ahead. Do not run "automation sites only" as a pre-step unless the user explicitly asks (it would deploy the automation sites twice).
-- After the full-production deploy succeeds, always run Step 3 (MT staging deploy via `legacy-deploy-blt-mt.yml`) for `{RELEASE_BLT1_AUTOMATION_STAGING}` only. `deploy-production.yml` now covers staging `nexus8` (and qa `munirevs-mrnexus`) via its built-in jobs, so **do not** legacy-deploy `nexus8` — but `{RELEASE_BLT1_AUTOMATION_STAGING}` is still not covered, so skipping Step 3 would leave that staging mirror behind production.
+- After the full-production deploy succeeds, always run Step 3 (MT staging deploy via `legacy-deploy-blt-mt.yml`) for `{RELEASE_BLT1_AUTOMATION_STAGING}` only. `deploy-production.yml` now covers staging `{RELEASE_MT_PROD_SITE_DIR}` (and qa `{QA_SITE}`) via its built-in jobs, so **do not** legacy-deploy `{RELEASE_MT_PROD_SITE_DIR}` — but `{RELEASE_BLT1_AUTOMATION_STAGING}` is still not covered, so skipping Step 3 would leave that staging mirror behind production.
 - The e2e tollgate inside the workflow is the release's regression check — never bypass it or override a failed gate without explicit user direction.
 - Treat any failed job or step in the `deploy-production.yml` run (Steps 1–2) as a real failure — that workflow has no known-expected failures. Phase 5 has exactly **two** expected failures: the Step 3 `Run database migrations` step on `{RELEASE_BLT1_AUTOMATION_STAGING}`, and the Step 4 `set Jira release to released` step on a RUX deploy (deploy still succeeded — never redeploy on that one).
-- **Never run `deploy-production.yml` and `deploy-rux.yml` against production concurrently.** Their GitHub concurrency groups differ, so the platform will not stop you — but they share one WireGuard peer identity (`172.18.26.2/32`, same key, same server, same host) and overlapping runs can drop either tunnel mid-deploy, leaving a partial deploy. Always check both workflows for `queued`/`in_progress` runs first, and finish one before starting the other.
+- **Never run `deploy-production.yml` and `deploy-rux.yml` against production concurrently.** Their GitHub concurrency groups differ, so the platform will not stop you — but they share one WireGuard peer identity (`{WIREGUARD_PEER_ADDRESS}`, same key, same server, same host) and overlapping runs can drop either tunnel mid-deploy, leaving a partial deploy. Always check both workflows for `queued`/`in_progress` runs first, and finish one before starting the other.
 - **This is a Phase 5 constraint only.** Phase 3 and Phase 4 have no ordering requirement — both tracks' merges, CI, pre-fast-forward gates, and `/fast-forward` comments may all happen in parallel. Do not impose sequencing on the earlier phases.
 - Never re-trigger a workflow while a production run is already in progress (production deploys share a single WireGuard peer and must not overlap).
 - **Authorize each track separately.** Explicit go-ahead for the MT deploy does not authorize the RUX deploy, and vice versa. Ask per track, naming the repo and tag.
@@ -362,7 +362,7 @@ Do not transition released tickets to Closed as part of Phase 5. Flag it if the 
 
 ## Appendix — Optional: "Deploy to automation sites only" rehearsal
 
-Not part of the standard flow. Use only if the user explicitly wants to validate the tag on the automation sites before committing to production. It deploys + migrates `blt1-automation-production` and `colorado-automation-production`, runs the e2e suite against them, then stops (no production deploy).
+Not part of the standard flow. Use only if the user explicitly wants to validate the tag on the automation sites before committing to production. It deploys + migrates `{RELEASE_MT_TENANT}` and `{RELEASE_SUTS_SITE_DIR}`, runs the e2e suite against them, then stops (no production deploy).
 
 > This is the same mode Phase 4 (`/releases-regression`) uses — Phase 4 points it at the `staging` branch, whereas this rehearsal points it at a release tag. Since ltc-deployment PR #62 (BLTE-23564), this mode **does** run e2e (earlier docs said it did not).
 
