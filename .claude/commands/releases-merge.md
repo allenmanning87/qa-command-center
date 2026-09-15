@@ -156,11 +156,30 @@ RUX lands every feature PR as a single-parent squash (confirm with `gh api repos
 
 Report each merge as it completes.
 
-> **Out-of-date RUX branches are a hard blocker, and triage should already have flagged them.** Because merge commits are disabled in RUX, a branch that is `BEHIND` `staging` cannot be merged at all — `gh pr merge` fails with *"the head branch is not up to date with the base branch."* The fix is a **local rebase by the PR author**; GitHub's web "Update branch" button is blocked by repository rules (Copilot review must re-run on changes), so **you cannot clear this yourself — never attempt the rebase.**
->
-> Report the PR as blocked, name the author (`gh pr view {number} --repo {GITHUB_ORG}/RUX --json author`), and move on to the other track. Re-verify with `gh pr view ... --json mergeStateStatus` before retrying — only merge once it reads `CLEAN`, not merely because someone said it was updated.
->
-> If a `BEHIND` RUX PR reaches this step *unflagged*, triage's Gate 4 failed to do its job — see the repo-specific `BEHIND` rule in `/releases-triage` Step 3.5b.
+#### RUX merges are serial — expect one rebase pause per remaining PR
+
+**In RUX, merging one PR puts every other open RUX PR into `BEHIND` immediately.** Merge commits are disabled (`allow_merge_commit: false`), so there is no merge commit to absorb the new `staging` head — each remaining branch must be updated before it can merge, even one that read `CLEAN` seconds earlier. This is normal RUX behavior, **not** a defect in the PR and **not** something triage failed to catch. `{RELEASE_APP_REPO}` and ST repos do not behave this way.
+
+Practically: **with N RUX PRs, expect about N−1 rebase pauses.** Five RUX PRs means roughly four.
+
+Merge RUX PRs **one at a time**, and after each merge:
+
+1. Re-query the next PR's state before attempting it:
+   ```
+   gh pr view {number} --repo {GITHUB_ORG}/RUX --json mergeStateStatus,mergeable,author
+   ```
+2. **If it reads `CLEAN`** → merge it and continue.
+3. **If it reads `BEHIND`** → **pause the RUX track and tell the user**, naming the PR and its author:
+
+   > `RUX #{number} ({JIRA}) is BEHIND — expected, #{previous} just merged. Author: {login}. Needs a rebase before it can merge.`
+
+   Then **wait for the user** to confirm the rebase has been pushed. Do not attempt the rebase yourself: GitHub's web "Update branch" button is blocked by repository rules (Copilot review must re-run on changes), and pushing to another developer's branch is not yours to do.
+4. When the user says it's updated, **re-verify** with the same query and merge only once it actually reads `CLEAN` — never on someone's say-so alone.
+5. Repeat until every RUX PR is merged.
+
+**Never block the other tracks on a RUX pause.** While waiting on a RUX rebase, the `{RELEASE_APP_REPO}` and ST work continues — the tracks are independent (see Track independence above). Only the RUX track waits.
+
+> A `BEHIND` RUX PR arriving at this step is expected and needs no commentary about triage having missed it. What *would* be a real finding is `CONFLICTING`/`DIRTY` — that is a genuine conflict, and triage should have caught it (see `/releases-triage` Gate 4).
 
 ### 4c — Create the staging → main PR
 After all feature PRs are merged into that repo's staging, create the release PR:
@@ -353,5 +372,5 @@ Omit any track section that had no PRs today. If there are no flagged/skipped PR
 - For each app repo's staging→main PR: create it even if some of that repo's PRs were skipped, as long as at least one was merged. If zero PRs were merged for a repo, skip that repo's PR creation and note it.
 - **RUX and `{RELEASE_APP_REPO}` are parallel, independent tracks.** Same process, separate everything: staging branches, release PRs, CI runs, `/fast-forward` authorizations, tag series (`v22.x.y` vs `v1.x.y`), and deploys. A failure or hold on one track never blocks the other — run whichever tracks have PRs and report them separately.
 - **Never assume RUX is out of scope.** As of 2026-08-25 RUX releases are part of this process; releasing MT while silently dropping RUX ships half the work.
-- Never fix an out-of-date RUX branch yourself — repository rules require Copilot review on changes, so the developer rebases locally. Report it as blocked and move on.
+- **A `BEHIND` RUX PR is expected, not a blocker.** Merging any RUX PR puts every other open RUX PR into `BEHIND` at once, so a release with N RUX PRs needs about N−1 rebases. Merge them serially: on each `BEHIND`, pause the RUX track, tell the user which PR and author, wait for confirmation, re-verify `CLEAN`, then merge (Step 4b). Never rebase the branch yourself — repository rules require Copilot review to re-run on changes, so the author does it locally. Other tracks keep running while RUX waits.
 - Roll blocked tickets forward rather than holding the release: if a developer can't resolve a Copilot finding or rebase in time and the ticket is P2/P3, move it to the next release story and continue. P0/P1 tickets warrant chasing an answer instead.

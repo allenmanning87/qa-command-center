@@ -264,11 +264,13 @@ Individual checks with conclusion `SKIPPED` or `NEUTRAL` are also **not** failur
 - `mergeable == CONFLICTING` (usually `mergeStateStatus == DIRTY`) → the branch conflicts with its base. Flag `⚠ MERGE CONFLICTS — needs rebase`. The developer must resolve against the base branch before this can be released.
 - `isDraft == true` → flag `⚠ DRAFT PR — not ready to merge`.
 - `mergeStateStatus == BLOCKED` → merge blocked by branch protection (missing required approval or a required check). Pair this with the Gate 2 / Gate 3 finding that explains *why*.
-- `mergeStateStatus == BEHIND` → the branch is behind its base. **Whether this blocks depends on the repo:**
-  - **`RUX` → hard blocker. Flag `⚠ BEHIND BASE — needs rebase by developer (RUX)`.** RUX has `allow_merge_commit: false`, so there is no merge commit available to absorb the base's commits — `gh pr merge` fails outright with *"the head branch is not up to date with the base branch"*. The fix is a **local rebase by the PR author**: GitHub's web "Update branch" button is blocked by repository rules (Copilot review must re-run on changes), so neither you nor `/releases-merge` can clear it. Name the PR author in the Notes so the user knows who to chase, and treat it exactly like a merge conflict for reporting purposes — it excludes the PR from the releasable set until the author pushes a rebase.
-  - **`{RELEASE_APP_REPO}` / ST → not a hard blocker.** These repos allow merge commits, so `/releases-merge` absorbs an out-of-date branch as an ordinary merge. Note it only if something else about the PR is already flagged.
+- `mergeStateStatus == BEHIND` → the branch is behind its base. **This is never a triage-time blocker, in any repo.**
+  - **`RUX` → expected, not a defect. Do not flag it and do not exclude the PR.** RUX has `allow_merge_commit: false`, so every merge to `staging` puts **all** remaining open RUX PRs into `BEHIND` — they each need an update before they can merge, even ones that read `CLEAN` a moment earlier. A `BEHIND` RUX PR at triage time therefore tells you only that *someone merged something*, not that this PR is unhealthy. It is handled serially during the merge run (`/releases-merge` Step 4b), which pauses and asks for a rebase each time it hits one.
+  - **`{RELEASE_APP_REPO}` / ST → not a blocker either.** These repos allow merge commits, so `/releases-merge` absorbs an out-of-date branch as an ordinary merge. Note it only if something else about the PR is already flagged.
 
-  Do **not** report a `BEHIND` RUX PR as "context rather than action" or defer it to `/releases-merge` — that wastes the one chance to catch it before the merge attempt fails.
+  A `BEHIND` RUX PR still counts toward the clean total, appears in the Dependencies list, and gets review tabs like any other. **The one thing worth saying** — and only when the release contains **more than one** RUX PR — is a single Notes/closing line telling the user to expect roughly one rebase request per additional RUX PR during Phase 3. With N RUX PRs, expect about N−1 pauses. That is a heads-up about pacing, not an exception.
+
+  > **Why this rule changed (2026-09-14).** It previously read "`RUX` → hard blocker", which excluded any `BEHIND` RUX PR from the release. That was wrong: it treated the normal consequence of merging a sibling PR as a defect in the PR that happened to be queued behind it, and in a multi-PR RUX release it would have excluded every PR but the first. The serialization is inherent to the repo's squash-only setting, not a developer mistake.
 - `mergeable == MERGEABLE` with `mergeStateStatus` `CLEAN`, `UNSTABLE`, or `HAS_HOOKS` → passes.
 
 > **`mergeable` can return `UNKNOWN`.** GitHub computes mergeability lazily — the first query after a push often returns `UNKNOWN` with `mergeStateStatus: UNKNOWN`. This is **not** a result. Wait a few seconds and re-query any PR that returns `UNKNOWN`, and only report a conflict once GitHub actually reports `CONFLICTING`. Never report `UNKNOWN` as either passing or failing.
@@ -304,7 +306,7 @@ Determine the expected base per repo class:
      gh api repos/{GITHUB_ORG}/{repo}/pulls/{number}/files --jq '[.[].filename]'
      ```
      Name the PR author so the user knows who to chase. Do **not** attempt the rebase yourself — a diverged branch on a core file needs the author's judgment about how to resolve.
-   - **Now `BEHIND`** → apply the repo-specific `BEHIND` rule in Gate 4 (hard blocker for RUX, otherwise note only).
+   - **Now `BEHIND`** → apply the `BEHIND` rule in Gate 4 — not a blocker in any repo; the PR stays in the releasable set.
 4. Leave the corrected base in place even when the PR ends up excluded. Reverting to the wrong base would re-hide the problem and make the next run's gates untrustworthy again.
 
 **Never leave a wrong base for `/releases-merge` to auto-correct.** That skill does correct it, but by then the release list is closed and a revealed conflict becomes a mid-merge stop rather than a grooming-time decision. Catching it here is the entire point of the gate.
@@ -414,7 +416,7 @@ A request gets a full block **only if it needs action**. Flag it if **any** of t
 - `⚠ UNRESOLVED COMMENTS` — Gate 1 (Step 3.5b)
 - `⚠ NOT APPROVED` (only when the merge is `BLOCKED`) / `⚠ CHANGES REQUESTED` — Gate 2 (Step 3.5b)
 - `⚠ CI FAILED` / `⚠ CI PENDING` — Gate 3 (Step 3.5b)
-- `⚠ MERGE CONFLICTS` / `⚠ DRAFT PR` / `⚠ BEHIND BASE — needs rebase by developer (RUX)` — Gate 4 (Step 3.5b)
+- `⚠ MERGE CONFLICTS` / `⚠ DRAFT PR` — Gate 4 (Step 3.5b). **`BEHIND` is not on this list** — it is expected in RUX after any sibling merge and never flags.
 - `⚠ WRONG BASE` — Gate 5 (Step 3.5b), whether the retarget re-gated clean or revealed a conflict
 - `⚠ MT MIGRATION — will be skipped by /releases-merge` — Step 3.6b (a `businesstaskdata` reference, or an index add on `businesstask`/`businesstaskdata`/`transactions`)
 - `⚠ {APP_REPO} STAGING AHEAD OF MAIN` — Step 3.6c (blocks that repo's merges in `/releases-merge` Step 2)
@@ -443,7 +445,7 @@ Everything else — **HIGH confidence, no unresolved comments, no blackout hold,
 **[TICKET-KEY]** — [ticket summary] — [status]
 JIRA: [full URL]
 PR: [full GitHub URL(s)] _(SUTS)_ _(has migrations — run manually)_ ← append `_(SUTS)_` only if Step 3.7 flagged the ticket; append `_(has migrations — run manually)_` only if Step 3.6 detected migrations; omit either or both otherwise. Order is `_(SUTS)_` first, then `_(has migrations — run manually)_`. For MULTI-PR, list every PR.
-Flag: [the specific reason(s) this needs review — e.g. `⚠ MERGE CONFLICTS — needs rebase`, `⚠ BEHIND BASE — needs rebase by developer (RUX)`, `⚠ DRAFT PR — not ready to merge`, `⚠ UNRESOLVED COMMENTS — send back to developer (N threads)`, `⚠ NOT APPROVED — merge blocked, no approver`, `⚠ CHANGES REQUESTED — send back to developer`, `⚠ CI FAILED — {check names}`, `⚠ CI PENDING — {check names}`, `⛔ {priority} — HELD (release blackout, not P0/P1)`, `MULTI-PR`, `NEEDS MANUAL REVIEW — no PR found in ticket comments`, `QA reported failure after approval`. List **every** gate the PR fails, not just the first.]
+Flag: [the specific reason(s) this needs review — e.g. `⚠ MERGE CONFLICTS — needs rebase`, `⚠ DRAFT PR — not ready to merge`, `⚠ UNRESOLVED COMMENTS — send back to developer (N threads)`, `⚠ NOT APPROVED — merge blocked, no approver`, `⚠ CHANGES REQUESTED — send back to developer`, `⚠ CI FAILED — {check names}`, `⚠ CI PENDING — {check names}`, `⛔ {priority} — HELD (release blackout, not P0/P1)`, `MULTI-PR`, `NEEDS MANUAL REVIEW — no PR found in ticket comments`, `QA reported failure after approval`. List **every** gate the PR fails, not just the first.]
 Confidence: [MEDIUM / LOW / NEEDS MANUAL REVIEW / HIGH]
 Notes: [what the user needs in order to decide — who left the unresolved threads and whether they're human or bot, stale or current; which specific checks failed and the run URL; what the open issue is; what the irreversible step requires. Be specific enough that the user can act without opening the PR.]
 
@@ -461,7 +463,7 @@ After the flagged blocks, include a **Releasable set** line:
 Then add only the lines that apply:
 
 - `Excluded (merge conflicts): [ticket] (#PR), …`
-- `Excluded (behind base — RUX rebase needed): [ticket] (RUX#PR — author {login}), …`
+- `Multi-PR RUX release — expect ~{N−1} rebase pauses in Phase 3: {N} RUX PRs queued.` — informational, only when the release has more than one RUX PR. Not an exclusion.
 - `Excluded (unresolved review comments): [ticket] (#PR), …`
 - `Excluded (not approved / merge blocked): [ticket] (#PR), …`
 - `Excluded (CI failed): [ticket] (#PR — {check name}), …`
@@ -480,7 +482,7 @@ In an exceptions-only report the counts are the **only** representation most req
 
 - `[N] linked tickets` **==** the number of qualifying entries collected in Step 2 (count the `outwardIssue` entries in `issuelinks`, don't re-tally from your own report blocks). Count **every** qualifying link, including Epics and any other issue type — the link type is the only filter (Step 2).
 - `[C] clean + [F] need review` **==** `[N]`
-- `[X] releasable PRs` **==** total PRs discovered − gate-excluded (unresolved comments / not approved / CI failed / merge conflicts / RUX behind base) − blackout-HELD − no-PR tickets
+- `[X] releasable PRs` **==** total PRs discovered − gate-excluded (unresolved comments / not approved / CI failed / merge conflicts) − blackout-HELD − no-PR tickets. A `BEHIND` RUX PR is **not** gate-excluded and still counts toward `[X]`.
 - `[N] ST + [M] MT + [R] RUX` **==** `[X]`
 - Tickets and PRs are **not** 1:1 — a ticket can contribute two PRs (RUX + `{RELEASE_APP_REPO}`), so never assume the PR count equals the linked-ticket count. Derive each independently.
 - The Step 6 Dependencies list contains exactly `[X]` bullets
@@ -503,6 +505,7 @@ If any identity fails to balance, **re-derive from the Step 2 ticket list before
 - **GitHub is authoritative for approval; the PR page is authoritative for outdated bot threads.** A Jira comment claiming code review passed does not clear Gate 2 — only a GitHub `APPROVED` state does. Conversely, outdated bot review threads can read as unresolved in the API while showing resolved on the PR page; flag them but say so, and defer to the user's read of the page.
 - **RUX is in scope** (as of 2026-08-25): `{GITHUB_ORG}/RUX` PRs are gated, reported, listed in Dependencies, and given review tabs exactly like `{RELEASE_APP_REPO}` PRs. There is no repo-based exclusion any more — the only exclusions are the five gates (Step 3.5b), the blackout hold (Step 3.8), and no-PR-found (Step 3.5).
 - **Watch the RUX ↔ `{RELEASE_APP_REPO}` pair**: on RUX sites, RUX serves the business center and `{RELEASE_APP_REPO}` serves `/backend/admin/`, so one ticket often has a PR in each. Releasing only one half ships a partial fix — flag any ticket whose paired PRs are split by the gates.
+- **RUX PRs go `BEHIND` in lockstep — never treat that as a defect.** Because RUX disallows merge commits, merging any one PR to `staging` puts every other open RUX PR into `BEHIND` at once. A `BEHIND` reading at triage time is a statement about the repo, not about the PR. Do not flag it, do not exclude it, and do not tell the user to chase the author. `/releases-merge` Step 4b resolves them one at a time during the merge run. The only thing to surface is a pacing heads-up when the release carries more than one RUX PR.
 - **SUTS handling**: SUTS-tagged tickets (detected in Step 3.7) are **not excluded** — they are included and labeled with `_(SUTS)_` on the PR line.
 - **Release blackout**: During the blackout window (computed in Pre-flight), only **P0/P1** tickets are eligible — all others are HELD (Step 3.8), excluded from the Step 6 Dependencies list and from Phase 3 merging unless the user explicitly overrides. Outside the window the gate is a no-op. Always show the computed window in the report header; show a ticket's priority only when it is HELD (or otherwise flagged).
 
@@ -654,18 +657,38 @@ Order the tabs to match the story's **Dependencies PR list** (Step 6) — the ST
 Build the list in two passes:
 
 1. **Dependencies pass (in PR-list order).** Walk the Dependencies PR list top-to-bottom. For each PR, emit its owning ticket's Jira URL, then that PR URL.
-   - `MULTI-PR` ticket → its PRs appear at their respective positions in the Dependencies list; emit the ticket's Jira tab once, immediately before the **first** of its PRs, then each of its PRs in list order.
+   - **Every PR in the Dependencies list gets its own tab — no exceptions.** The Dependencies list and the PR tabs are 1:1: if the list has `[X]` bullets, the launch command contains exactly `[X]` PR URLs. Walk the *PR list*, not the ticket list — a ticket is never "already covered" because one of its PRs was emitted earlier.
+   - `MULTI-PR` ticket → its PRs sit at **different positions in different repo sections** (ST, then MT, then RUX), and each one still gets a tab at its own position. Emit the ticket's **Jira** tab once only, immediately before the **first** of its PRs; every subsequent PR of that ticket is emitted bare, at its own position, with no repeated Jira tab. Emitting the Jira tab once must never collapse the ticket's other PRs — the de-duplication applies to the Jira URL alone.
 2. **Trailing pass (excluded / no-PR tickets).** After the Dependencies pass, append every linked ticket **not** already emitted above — i.e. tickets excluded from the Dependencies list: HELD (blackout, Step 3.8), `⚠ UNRESOLVED COMMENTS` (Step 3.5b), and `NEEDS MANUAL REVIEW` (no PR — Step 3.5). Walk these in Step 5 report (link) order. For each, emit its Jira URL, then its PR URL **if one was discovered** (HELD and unresolved-comment tickets have a PR even though it's excluded from the release — pair it so the user can review it); `NEEDS MANUAL REVIEW` tickets get the Jira tab only.
 
 **URLs:**
 - **Ticket URL:** `https://{JIRA_BASE_URL}/browse/{TICKET-KEY}` (always emitted — one per linked ticket, exactly once).
 - **PR URL(s):** the PR(s) discovered for that ticket in Step 3.
 - **`RUX` PRs get tabs like any other** — they are part of the release now. A ticket with both a `RUX` and a `{RELEASE_APP_REPO}` PR emits its Jira tab once, then both PR tabs at their respective positions in Dependencies order.
+- **Any repo combination can pair, not just RUX + `{RELEASE_APP_REPO}`.** An ST repo pairs with `{RELEASE_APP_REPO}` just as often — e.g. an ST admin-tooling PR that queues a job plus the `{RELEASE_APP_REPO}` PR that executes it. Both halves need tabs. Never treat "one PR already opened for this ticket" as reason to skip the other; the repo names are irrelevant to the rule.
 
 **Open every linked ticket, including excluded ones** so the user can manually review them. This is intentionally broader than the Step 6 Dependencies list; the releasable set simply comes first (Dependencies order), with excluded tickets trailing. Do **not** filter the tab list by release-eligibility.
 
 > Ordering example — Dependencies list is `[st-repo#10, MRNexus#20, MRNexus#21]` (owned by T2, T1, T4), plus T3 is NEEDS MANUAL REVIEW (no PR) and T5 is HELD (has PR #99):
 > `T2-jira, st-repo#10, T1-jira, MRNexus#20, T4-jira, MRNexus#21,` **then trailing:** `T3-jira (no PR), T5-jira, #99`
+>
+> **Multi-PR example — the case that is easiest to get wrong.** Dependencies list is `[st-repo#10, {RELEASE_APP_REPO}#20, {RELEASE_APP_REPO}#21, RUX#30]`, where **T1 owns both `st-repo#10` and `{RELEASE_APP_REPO}#20`**, T2 owns `{RELEASE_APP_REPO}#21`, and T3 owns `RUX#30`:
+>
+> `T1-jira, st-repo#10, {RELEASE_APP_REPO}#20, T2-jira, {RELEASE_APP_REPO}#21, T3-jira, RUX#30`
+>
+> That is **7 tabs for 4 PRs and 3 tickets**. T1's Jira tab appears once, but **both** of its PRs get tabs — `{RELEASE_APP_REPO}#20` is emitted bare, with no second T1 Jira tab before it. Emitting `st-repo#10` and stopping there would silently drop half of T1's release.
+>
+> **Why this rule exists (2026-09-15, BLTE-24146).** That ticket shipped an ST admin-tooling PR that queues a per-license renewal job plus the `{RELEASE_APP_REPO}` PR that honors the job's new flag. Only the ST PR got a tab. Both were in Dependencies and both merged, so the release was correct — but the pair never got eyeballed together during grooming, and the developer's own testing note warned that deploying one half without the other makes the job **silently renew every license in the tenant** while the run log still reads as a pass.
+
+### Verify the count before launching
+
+The PR-tab count is the check that catches a dropped pair. Before running the launch command, confirm:
+
+- **PR tabs == the number of bullets in the Step 6 Dependencies list**, exactly. Count the `pull/` URLs in the command you are about to run and compare against the Dependencies bullet count — they must match.
+- **Jira tabs == the number of linked tickets** (Step 2 count), each appearing exactly once.
+- Total tabs == (every PR exactly once) + (every linked ticket exactly once), plus any excluded ticket's PR emitted in the trailing pass.
+
+If the PR-tab count is lower than the Dependencies bullet count, a multi-PR ticket has been collapsed — re-derive the list from the **PR list** rather than from the ticket list before launching. Report the counts in the confirmation line, e.g. `Opened 7 tabs in Chrome (3 tickets + 4 PRs)`, so a mismatch is visible after the fact.
 
 ### Launch
 
@@ -678,7 +701,7 @@ powershell.exe -NoProfile -Command "Start-Process chrome -ArgumentList @('URL1',
 Substitute the ordered URL list for `'URL1','URL2',…` (single-quoted, comma-separated). Keep them in one `Start-Process` call so tab order is deterministic.
 
 - If Chrome isn't found / `Start-Process` errors, report the failure and **print the ordered URL list** in the chat so the user can open the tabs manually — do not block the rest of the skill.
-- Report a one-line confirmation, e.g. `Opened N tabs in Chrome ([T] tickets + [P] PRs).`
+- Report a one-line confirmation, e.g. `Opened N tabs in Chrome ([T] tickets + [P] PRs).` **`[P]` must equal the Dependencies bullet count** — if it doesn't, a multi-PR ticket was collapsed; fix the list and re-launch rather than reporting the lower number.
 
 ## Step 7 — Verify automation subtasks + description grade
 
