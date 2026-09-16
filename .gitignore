@@ -7,6 +7,10 @@ server.log
 docs/designs/wip-acceptance-criteria.md
 .claude/XML Samples/
 
+# Harness-synced stock skills (docx/pdf/pptx/xlsx/skill-creator/...). Machine-
+# generated cache under a UUID dir that changes on every re-sync. Not our work.
+.claude/skills/synced/
+
 # Private skills — these live in the local-only neumo-knowledge repo.
 # NOTE: ~/.claude/commands is a SYMLINK to .claude/commands here, so anything
 # dropped into the user-level commands dir lands in this PUBLIC repo by default.
