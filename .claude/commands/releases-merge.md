@@ -7,6 +7,9 @@ Before doing anything else, read the `.env` file at the repo root using the `Rea
 - `JIRA_PROJECT`
 - `JIRA_RELEASES_EPIC`
 - `RELEASE_APP_REPO`
+- `SUTS_API_RELEASE_OWNER` — the person who releases `SUTS-API` PRs (see the repo classes below)
+
+> **`SUTS_API_RELEASE_OWNER` is a private value.** Resolve it from `.env` and use the real name **only when reporting to the user in chat**. Never write it into a Jira description or comment, a PR comment, a commit message, or any file under `.claude/` — those are published or tracked in a public repo. In written artifacts use "its designated owner". If the variable is unset, fall back to "its designated owner" everywhere and say once that it is unset.
 
 ---
 
@@ -24,10 +27,13 @@ Parse the story's description — the PRs are listed under the `### Dependencies
 
 If no story is found, ask the user for the story key before proceeding.
 
-Each PR is classified into one of **three** repo classes:
+Each PR is classified into one of **four** repo classes:
 - **MT (Multi-Tenant)**: `{GITHUB_ORG}/{RELEASE_APP_REPO}` repo
 - **RUX**: `{GITHUB_ORG}/RUX` repo
+- **SUTS-API**: `{GITHUB_ORG}/SUTS-API` repo — **staging-based** (PRs base on `staging`, like MT and RUX), even though its GitHub default branch is `master`. It is **not** an ST repo.
 - **ST (Single-Tenant)**: any other repo
+
+> **SUTS-API is released by `{SUTS_API_RELEASE_OWNER}` only** (confirmed 2026-09-21). **Do not merge a SUTS-API PR in this phase.** Report it in the final output as handed off to `{SUTS_API_RELEASE_OWNER}`, with its PR URL and gate status, and carry on with the other repos. Never retarget a SUTS-API PR to `master` — its expected base is `staging`.
 
 > **RUX is in scope as of 2026-08-25.** RUX follows the **same staging-based process as `{RELEASE_APP_REPO}`** — feature PRs base on `staging`, a `staging` → `main` release PR is opened with the same title convention, CI runs (PR-title conventions, Snyk), and `/fast-forward` merges it and cuts the tag. Any older instruction to omit RUX PRs or treat them as another team's responsibility is obsolete. Process the two app repos as **parallel, independent tracks**: a RUX blocker never holds up the MT release, and vice versa.
 
@@ -84,7 +90,7 @@ gh api repos/{GITHUB_ORG}/{APP_REPO}/compare/main...staging
 
 ## Step 3 — Process ST PRs (one at a time, in report order)
 
-For each ST PR (any repo except `{RELEASE_APP_REPO}` and `RUX`):
+For each ST PR (any repo except `{RELEASE_APP_REPO}`, `RUX` and `SUTS-API`):
 
 ### 3a — Validate base branch
 ```
@@ -92,8 +98,8 @@ gh pr view {number} --repo {GITHUB_ORG}/{repo} --json baseRefName,state
 ```
 - If `state` is already `MERGED`: skip with a note.
 - If `baseRefName` is not `master`, `production-master`, or `main`:
-  - If `baseRefName` is `staging`: this is the wrong target for an ST repo. Automatically correct it by looking up the repo's default branch (`gh repo view --repo {GITHUB_ORG}/{repo} --json defaultBranchRef --jq '.defaultBranchRef.name'`), then run `gh pr edit {number} --repo {GITHUB_ORG}/{repo} --base {default_branch}`. Report the correction and continue with the merge.
-  - Any other unexpected base branch: flag as "unexpected base branch — needs manual review" and **stop and ask the user** before proceeding. Never auto-skip a PR that is listed in the confirmed story.
+  - If `baseRefName` is **exactly `staging`**: the two integration branches have been swapped, which is the one unambiguous ST base error. Automatically correct it by looking up the repo's default branch (`gh repo view --repo {GITHUB_ORG}/{repo} --json defaultBranchRef --jq '.defaultBranchRef.name'`), then run `gh pr edit {number} --repo {GITHUB_ORG}/{repo} --base {default_branch}`. Report the correction and continue with the merge.
+  - **Any other base — i.e. a feature or ticket branch — is a deliberate stack, not an error.** Do **not** retarget it. Flag as "stacked PR — base is a feature branch, target unconfirmed" and **stop and ask the user**, reporting the parent branch, whether it has its own PR and that PR's state (`gh api "repos/{GITHUB_ORG}/{repo}/pulls?head={GITHUB_ORG}:{base}&state=all"`). Retargeting a stack guesses at a dependency you cannot see. Never auto-skip a PR that is listed in the confirmed story.
 
 ### 3b — Determine version bump from PR title
 ```
@@ -141,7 +147,8 @@ Strict **ST → RUX → MT** sequencing applies **only** to the Phase 5 producti
 gh pr view {number} --repo {GITHUB_ORG}/{APP_REPO} --json baseRefName,state
 ```
 - If `state` is already `MERGED`: skip with a note. (Common on RUX — the owning team often merges its own PRs to `staging` ahead of the release; an already-merged PR is expected, not an error.)
-- If `baseRefName` is not `staging`: flag as "expected base=staging, got {branch} — needs manual review", skip it.
+- If `baseRefName` is `main` / `master` / `production-master`: the integration branches have been swapped — the one unambiguous app-repo base error. Correct it (`gh pr edit {number} --repo {GITHUB_ORG}/{APP_REPO} --base staging`), report the correction, and continue.
+- If `baseRefName` is **any other branch** (a feature or ticket branch): this is a **deliberate stack**, not an error. Do **not** retarget it. Flag as "stacked PR — base is a feature branch, target unconfirmed", report whether the parent branch has its own PR and that PR's state, and **stop and ask the user** — the author may need the parent merged first, and retargeting would either drop a real dependency or manufacture a conflict that does not exist in their intended merge order.
 
 ### 4b — Merge each feature PR into staging
 
@@ -287,9 +294,50 @@ gh release list --repo {GITHUB_ORG}/{APP_REPO} --limit 1 --json tagName,createdA
 ```
 - Stop as soon as a tag newer than the one that existed before the `/fast-forward` comment appears.
 - Report: `✓ {APP_REPO} release tag created: v{version}`
-- If 5 minutes elapse without a new tag, report and stop — the automation may still be running.
+- If no new tag appears, **do not report a bare timeout** — run the diagnosis in 4g-ii below and report the actual cause.
 
 > Tag series differ per repo and must not be conflated: `{RELEASE_APP_REPO}` runs `v1.x.y` (e.g. `v1.256.0`), `RUX` runs `v22.x.y` (e.g. `v22.11.3`). Always read each repo's own latest tag — never infer one from the other.
+
+### 4g-ii — No tag appeared: diagnose before reporting
+
+**"The automation may still be running" is usually the wrong answer, and it sends the user to wait on something that will never happen.** A missing tag has three distinct causes with three different remedies, and they are told apart by looking at the release workflow run — never by waiting longer.
+
+Find the post-fast-forward run and read its jobs:
+
+```bash
+# {RELEASE_APP_REPO} → "Default branch workflow";  RUX → on-push-default-branch.yml
+RUN=$(gh run list --repo {GITHUB_ORG}/{APP_REPO} --limit 10 \
+        --json databaseId,name,event,createdAt \
+        --jq '[.[] | select(.event == "push")][0].databaseId')
+gh run view $RUN --repo {GITHUB_ORG}/{APP_REPO} --json status,conclusion,jobs \
+  --jq '.status + " / " + (.conclusion // "-"), (.jobs[] | "  " + .name + " -> " + (.conclusion // .status))'
+```
+
+Match the result against these three cases:
+
+| Run state | Cause | What to report / do |
+|---|---|---|
+| `in_progress` | Genuinely still running | Keep polling. This is the only case where waiting helps. |
+| `completed / failure` | The release job broke | Report the failing job + step with the run URL. The fix is re-running that job — **not** a manual tag. |
+| **`completed / success` but `semantic-release` published nothing** — the giveaway is that the downstream jobs (`notify-teams-release-notes`, `add-jira-fix-version`) are **`skipped`**, since they are conditioned on a release existing | **semantic-release deliberately declined to release**, because no commit in the release carries a releasing prefix | Report this as a **decision, not a failure** (see below). Waiting will never produce a tag. |
+
+#### semantic-release declined — the "no releasable commits" case
+
+semantic-release derives the bump from conventional-commit prefixes. `feat:` → minor and `fix:` → patch produce a release; **`ci:`, `chore:`, `docs:`, `test:`, `style:` and `refactor:` do not.** When *every* commit in a release is a non-releasing type, semantic-release exits `success` having created no tag, and the release-notes and Fix Version jobs skip. The run is green. Nothing is broken.
+
+Report it plainly, for example:
+
+> `⚠ {APP_REPO}: no release tag — semantic-release declined (no releasable commits). The only commit is `ci: BLTE-24248 …`; `ci:` is a non-releasing type. Run {url} concluded success with notify/fix-version skipped. Waiting will not produce a tag. Code IS merged to main.`
+
+Then state the consequences explicitly, because they are easy to miss:
+
+- **Phase 5 cannot run for this track** — `deploy-production.yml` needs a real tag ref to check out. Skip that track's deploy (and, for MT, skip the Step 3 `{RELEASE_BLT1_AUTOMATION_STAGING}` staging deploy, which also takes the tag).
+- **The tickets get no Fix Version and appear in no release notes.** They will not show up in any `v*` release, so suggest a comment on each affected ticket recording that it merged to `main` on this date without a tag — otherwise it looks lost later.
+- **Workflow-only changes are already live.** Files under `.github/workflows/` resolve from the ref a run is triggered on, not from a release tag, so once they are on the default branch they take effect on the next trigger with no tag and no deploy. A reusable (`workflow_call`) workflow called from the default branch likewise resolves at that ref. **This applies only to the `.github/` portion of the diff** — any application code in the same commit is on `main` but unshipped, which is the genuinely risky shape: half the change live, half not. Say which case it is.
+
+Do **not** hand-create the tag to "fix" this, and do not offer it as the default remedy. A manual tag yields the ref but skips release notes and Fix Version stamping, and can collide with or leave a gap in the version series that semantic-release computes next. If the user wants the change tagged, the options are (a) let it ride out with the next release containing a `fix:`/`feat:` — usually correct, especially for CI-only changes — or (b) explicitly ask for a manual tag, accepting the above. Present (a) first and let the user choose.
+
+> **This is a recurring scenario, not an edge case** (observed several times a quarter — e.g. 2026-09-17, BLTE-24248, a `ci:`-only MRNexus release). The releases whose entire content is `ci:`/`chore:`/`docs:` commits are exactly the ones that hit it. A release containing even one `fix:` or `feat:` always tags.
 
 ### 4g-i — RUX only: wait for "Release and archive" to finish
 
@@ -322,7 +370,9 @@ Typical duration is ~3 minutes (observed 2m46s for `v22.12.0`). Report `✓ RUX 
 > **Consequence for the release PR title:** `add-jira-fix-version` parses the ticket keys out of the `staging` → `main` PR title. Any ticket shipping in the release but missing from that title gets **no Fix Version**, and a duplicated or wrong key stamps the wrong thing. Get the title right before `/fast-forward` — it cannot be fixed afterward by editing the PR.
 
 ### 4h — Proceed to Phase 5
-After the release tag is confirmed (or the 5-minute timeout is reached) **for every track that ran**, output the Step 5 final report and then invoke the `/releases-deploy` skill, passing each tag that was created. `/releases-deploy` handles the MT tag via `deploy-production.yml` and the RUX tag via `deploy-rux.yml`; each has its own explicit go-ahead gate.
+After each track's tag is resolved — created, or diagnosed as absent per 4g-ii — output the Step 5 final report and then invoke the `/releases-deploy` skill, passing each tag that was actually created. `/releases-deploy` handles the MT tag via `deploy-production.yml` and the RUX tag via `deploy-rux.yml`; each has its own explicit go-ahead gate.
+
+**Pass only tags that exist.** A track whose tag semantic-release declined to cut (4g-ii) has nothing to deploy — `deploy-production.yml` requires a real tag ref. Omit that track from the Phase 5 handoff, say so explicitly in the report, and never substitute a branch name or a hand-made tag for the missing one. If *no* track produced a tag, skip Phase 5 entirely rather than invoking it with nothing.
 
 > **Phase 5 deploy order is ST → RUX → MT**, strictly sequential. ST deploys are run manually by the user and never block the app repos. RUX deploys before MT because it finishes in under 40 seconds while MT takes 20+ minutes; the two workflows share one WireGuard peer identity and **must never run concurrently** — see the serialization warning in `/releases-deploy`.
 
@@ -344,14 +394,14 @@ MT Release ({RELEASE_APP_REPO}):
 ✓ Staging → Main PR: {URL}
 CI: [✓ all checks green] OR [⚠ failing: {check name} — {url}] OR [⏳ still running — check manually]
 Phase 4 regression: [→ handing off to /releases-regression] OR [✓ passed — {run_url}] OR [⚠ failed — {run_url}] OR [pending CI green]
-Tag: [v{version}] OR [pending /fast-forward]
+Tag: [v{version}] OR [pending /fast-forward] OR [⚠ none — semantic-release declined (no releasable commits); code merged to main, Phase 5 skipped for this track — {run_url}]
 
 RUX Release:
 ✓ PRs merged into staging: #{N} ({JIRA}), #{N} ({JIRA}), ...
 ✓ Staging → Main PR: {URL}
 CI: [✓ all checks green] OR [⚠ failing: {check name} — {url}] OR [⏳ still running — check manually]
 Approval: [✓ approved by {login}] OR [⚠ needs 1 approving review — ask the RUX team]
-Tag: [v{version}] OR [pending /fast-forward]
+Tag: [v{version}] OR [pending /fast-forward] OR [⚠ none — semantic-release declined (no releasable commits); code merged to main, Phase 5 skipped for this track — {run_url}]
 (No Phase 4 line — RUX runs no regression suite.)
 
 Flagged / Skipped:
@@ -374,3 +424,4 @@ Omit any track section that had no PRs today. If there are no flagged/skipped PR
 - **Never assume RUX is out of scope.** As of 2026-08-25 RUX releases are part of this process; releasing MT while silently dropping RUX ships half the work.
 - **A `BEHIND` RUX PR is expected, not a blocker.** Merging any RUX PR puts every other open RUX PR into `BEHIND` at once, so a release with N RUX PRs needs about N−1 rebases. Merge them serially: on each `BEHIND`, pause the RUX track, tell the user which PR and author, wait for confirmation, re-verify `CLEAN`, then merge (Step 4b). Never rebase the branch yourself — repository rules require Copilot review to re-run on changes, so the author does it locally. Other tracks keep running while RUX waits.
 - Roll blocked tickets forward rather than holding the release: if a developer can't resolve a Copilot finding or rebase in time and the ticket is P2/P3, move it to the next release story and continue. P0/P1 tickets warrant chasing an answer instead.
+- **A missing release tag is diagnosed, never waited out.** If no tag appears after `/fast-forward`, read the release workflow run (step 4g-ii) and report the real cause. A green run with `semantic-release` succeeding but the notify / fix-version jobs **skipped** means semantic-release deliberately declined because no commit carries a releasing prefix (`ci:`, `chore:`, `docs:`, `test:`, `style:`, `refactor:` do not release) — waiting will never produce a tag. Never report a bare "automation may still be running" timeout, never pass a non-existent tag to Phase 5, and never hand-create the tag as the default fix (it skips release notes and Fix Version stamping and can break the version series).
