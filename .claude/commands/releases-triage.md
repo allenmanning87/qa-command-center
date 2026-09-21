@@ -7,6 +7,9 @@ Before doing anything else, read the `.env` file at the repo root using the `Rea
 - `JIRA_PROJECT`
 - `JIRA_RELEASES_EPIC`
 - `RELEASE_APP_REPO`
+- `SUTS_API_RELEASE_OWNER` — the person who releases `SUTS-API` PRs (see Step 3.4)
+
+> **`SUTS_API_RELEASE_OWNER` is a private value.** Resolve it from `.env` and use the real name **only when reporting to the user in chat** — "hand SUTS-API#63 to {name}" reads naturally and is what the user wants. Never write it into a Jira description, a Jira comment, a PR comment, a commit message, or any file under `.claude/` — those are published or tracked in a public repo. In written artifacts use "its designated owner". If the variable is unset or missing, fall back to "its designated owner" everywhere, including chat, and say once that `SUTS_API_RELEASE_OWNER` is unset.
 
 ---
 
@@ -168,9 +171,12 @@ For each discovered PR, parse `<repo>` from `github.com/{GITHUB_ORG}/<repo>/pull
 
 - `<repo> == {RELEASE_APP_REPO}` (`MRNexus`) → **MT**.
 - `<repo> == RUX` → **RUX**. A second staging-based app repo, released on the same cadence as `{RELEASE_APP_REPO}` — PRs base on `staging`, it runs full CI (PR-title conventions, Snyk), it carries its own release tags (e.g. `v22.11.3`) cut by a fast-forward of `staging` → `main`, and its default branch is `main`.
+- `<repo> == SUTS-API` → **SUTS-API**. A **staging-based** repo: PRs base on `staging`, exactly like `{RELEASE_APP_REPO}` and `RUX`. Its GitHub *default* branch is `master`, which makes it look like an ST repo — **it is not.** Never retarget a SUTS-API PR to `master`.
 - Any other repo → **ST** (merges to the repo's default branch, own semver tag per `/releases-merge`).
 
-So there are **three** repo classes: **ST**, **MT** (`{RELEASE_APP_REPO}`), and **RUX**. They are ordered ST → MT → RUX everywhere PRs are **listed** (see the `[PR LIST]` structure in Step 6).
+So there are **four** repo classes: **ST**, **MT** (`{RELEASE_APP_REPO}`), **RUX**, and **SUTS-API**. They are ordered ST → MT → RUX everywhere PRs are **listed** (see the `[PR LIST]` structure in Step 6); list SUTS-API PRs with the app repos, after MT.
+
+> **SUTS-API is released by `{SUTS_API_RELEASE_OWNER}` only** (confirmed 2026-09-21). Triage gates SUTS-API PRs, reports them, and lists them in Dependencies like any other — but **do not merge or release a SUTS-API PR in Phase 3.** Hand it to `{SUTS_API_RELEASE_OWNER}` and note in the report that the release of that PR is theirs. Treat the base expectation as `staging` (same as RUX/MRNexus); only the *who releases it* differs.
 
 > This is the **listing** order only. The Phase 5 **deploy** order is different — **ST → RUX → MT** — because RUX deploys in under 40 seconds and must clear the shared WireGuard peer before the 20-minute MT deploy starts. Don't infer deploy sequence from the Dependencies list.
 
@@ -285,13 +291,46 @@ Determine the expected base per repo class:
 |---|---|
 | `{RELEASE_APP_REPO}` (MT) | `staging` |
 | `RUX` | `staging` |
+| `SUTS-API` | `staging` — **not** its `master` default branch (see Step 3.4) |
 | ST (any other repo) | that repo's **default branch** — look it up, never assume: `gh repo view {GITHUB_ORG}/{repo} --json defaultBranchRef --jq '.defaultBranchRef.name'` |
 
 > ST default branches are **not** uniform — observed values include `master`, `production-master` and `main` across `admin` and several ST tenant repos. Query each repo; do not carry an answer over from another ST repo or from a previous release.
 
 **If `baseRefName` matches the expected base** → passes, no mention needed.
 
-**If it does not match**, correct it during triage and re-gate:
+#### Only two mismatch shapes are safe to correct on your own
+
+A base mismatch is **not** automatically an error. Before touching anything, classify the mismatch:
+
+**Shape A — safe to retarget without asking.** The base is the *other* long-lived integration branch for that repo class, i.e. the two repo classes have been swapped:
+- A staging-based repo (`{RELEASE_APP_REPO}`, `RUX`, `SUTS-API`) whose base is `main` / `master` / `production-master` → should be `staging`.
+- An **ST** repo whose base is `staging` → should be that repo's default branch.
+
+These are the only mismatches where the intent is unambiguous, because neither branch is anyone's feature work. Correct them per the steps below.
+
+**Shape B — STOP and ask the developer. Do not retarget.** The base is **any other branch** — a feature branch, a ticket branch, another PR's head. This is a **deliberate stack**: the author based their work on someone else's unmerged change because it depends on it. You cannot tell from the outside whether the dependency is real, so retargeting it to `staging` is a guess that either (a) silently drops a needed parent, or (b) manufactures a conflict that does not exist in the author's intended merge order.
+
+For Shape B, do **not** run `gh pr edit`. Instead:
+
+1. Identify whether the parent branch has **its own PR**, and what state it is in:
+   ```bash
+   gh api "repos/{GITHUB_ORG}/{repo}/pulls?head={GITHUB_ORG}:{base_branch}&state=all" \
+     --jq '.[]|{number,state,merged_at,base:.base.ref,title,author:.user.login}'
+   ```
+2. Report the stack as an exception with flag `⚠ STACKED PR — base is a feature branch, confirm target with developer`, and give the user everything needed to ask:
+   - the parent branch name and its PR number/state (open / merged / closed-unmerged), or that it has no PR;
+   - whether the parent is in **today's release** (is its ticket linked to the release story?);
+   - the PR author's GitHub login, so the user knows who to ask;
+   - **read-only** divergence of the child against the expected base, for context only — this does **not** decide anything:
+     ```bash
+     gh api repos/{GITHUB_ORG}/{repo}/compare/{expected_base}...{headRefName} --jq '{ahead_by,behind_by,status}'
+     ```
+3. **Exclude the PR from the Dependencies list** pending the developer's answer, and say plainly that the exclusion is awaiting confirmation rather than a defect.
+4. If the parent PR is **already merged**, say so — the stack is simply stale bookkeeping and `staging` is almost certainly the right base, but it is still the developer's call to confirm, so report it rather than fixing it.
+
+> **Why this rule exists (2026-09-21, BLTE-24373).** Triage found two stacked MT PRs — `MRNexus#7354` based on `BLTE-3922-accept-negative-renewal-due-date`, and `MRNexus#7437` based on `fix-BLTE24029-homeruleremitview-excel-export` — and retargeted both to `staging` on the assumption that any non-`staging` base was wrong. Both were deliberate stacks. `#7437`'s parent (`#7334`) had merged on Sep 15, so that retarget was harmless but should still have been the author's call. `#7354`'s parent (`#7312`, BLTE-3922) was **still open and itself conflicting**, 430 commits behind `staging` — so the "revealed conflict" was really the whole two-deep stack being stale, not a defect in `#7354`. Both retargets had to be reverted, and each needed a developer conversation the skill had skipped. Assume a swapped integration branch is an error; assume a feature-branch base is intentional.
+
+**For a Shape A mismatch**, correct it during triage and re-gate:
 
 1. Retarget the PR to the expected base:
    ```bash
@@ -307,9 +346,11 @@ Determine the expected base per repo class:
      ```
      Name the PR author so the user knows who to chase. Do **not** attempt the rebase yourself — a diverged branch on a core file needs the author's judgment about how to resolve.
    - **Now `BEHIND`** → apply the `BEHIND` rule in Gate 4 — not a blocker in any repo; the PR stays in the releasable set.
-4. Leave the corrected base in place even when the PR ends up excluded. Reverting to the wrong base would re-hide the problem and make the next run's gates untrustworthy again.
+4. Leave the corrected base in place even when the PR ends up excluded. Reverting to the wrong base would re-hide the problem and make the next run's gates untrustworthy again. *(This applies to Shape A only. A Shape B base is never changed in the first place, so there is nothing to leave or revert.)*
 
-**Never leave a wrong base for `/releases-merge` to auto-correct.** That skill does correct it, but by then the release list is closed and a revealed conflict becomes a mid-merge stop rather than a grooming-time decision. Catching it here is the entire point of the gate.
+**Never leave a Shape A wrong base for `/releases-merge` to auto-correct.** That skill does correct it, but by then the release list is closed and a revealed conflict becomes a mid-merge stop rather than a grooming-time decision. Catching it here is the entire point of the gate.
+
+> **If the user asks you to revert a base you changed**, do it, and then say plainly what the revert re-hides: a Shape A PR that was `CONFLICTING` against the correct base will read `CLEAN` again against the wrong one, and `/releases-merge` will retarget it mid-run and halt there. Recommend excluding that PR from the Dependencies list for the current release even though its base now looks fine. Also check before reverting whether the original base still exists as an open branch — pointing a PR back at a merged-and-deleted branch leaves it in a broken state, and the user should hear that before you run the edit, not after.
 
 > Real failure this gate exists to prevent (2026-09-08, BLTE-21222 / `{tenant-a}#811`): the PR targeted `staging` while the repo default was `production-master`. Triage reported it `CLEAN` — true against `staging` — and noted the base only as a cosmetic "auto-corrected later" aside. At merge time the retarget exposed a conflict in `app/framework.php` with the branch **146 commits behind** `production-master`, halting Phase 3 and forcing the ticket out of the release after the list had been closed and the story written.
 
@@ -417,7 +458,8 @@ A request gets a full block **only if it needs action**. Flag it if **any** of t
 - `⚠ NOT APPROVED` (only when the merge is `BLOCKED`) / `⚠ CHANGES REQUESTED` — Gate 2 (Step 3.5b)
 - `⚠ CI FAILED` / `⚠ CI PENDING` — Gate 3 (Step 3.5b)
 - `⚠ MERGE CONFLICTS` / `⚠ DRAFT PR` — Gate 4 (Step 3.5b). **`BEHIND` is not on this list** — it is expected in RUX after any sibling merge and never flags.
-- `⚠ WRONG BASE` — Gate 5 (Step 3.5b), whether the retarget re-gated clean or revealed a conflict
+- `⚠ WRONG BASE` — Gate 5 (Step 3.5b), Shape A: whether the retarget re-gated clean or revealed a conflict
+- `⚠ STACKED PR — base is a feature branch, confirm target with developer` — Gate 5 (Step 3.5b), Shape B: excluded pending the developer's answer, not retargeted
 - `⚠ MT MIGRATION — will be skipped by /releases-merge` — Step 3.6b (a `businesstaskdata` reference, or an index add on `businesstask`/`businesstaskdata`/`transactions`)
 - `⚠ {APP_REPO} STAGING AHEAD OF MAIN` — Step 3.6c (blocks that repo's merges in `/releases-merge` Step 2)
 - `⛔ HELD` by the blackout gate (Step 3.8)
@@ -458,7 +500,7 @@ Notes: [what the user needs in order to decide — who left the unresolved threa
 ### Closing lines
 
 After the flagged blocks, include a **Releasable set** line:
-`Releasable set: [X] PRs — [N] ST ([list repos]) + [M] MT + [R] RUX.` (omit a term whose count is zero)
+`Releasable set: [X] PRs — [N] ST ([list repos]) + [M] MT + [R] RUX + [S] SUTS-API (released by `{SUTS_API_RELEASE_OWNER}`).` (omit a term whose count is zero)
 
 Then add only the lines that apply:
 
@@ -470,7 +512,7 @@ Then add only the lines that apply:
 - `Partial fix — only one half releasable: [ticket] ([repo]#[PR] excluded, [repo]#[PR] clean)` — for a ticket whose `RUX` / `{RELEASE_APP_REPO}` pair is split by the gates.
 - `Held for release blackout ([window]) — not P0/P1: [ticket] ({priority}), …` — excluded from Step 6's Dependencies list and from Phase 3 merging unless the user explicitly overrides.
 - `No PR found (chase developer): [ticket] — [summary], …`
-- `ST-only release — pipeline stops after Phase 3.` (only when every discovered PR is ST — i.e. **no** `{RELEASE_APP_REPO}` **and no** `RUX` PRs. A release containing RUX PRs is not ST-only.)
+- `ST-only release — pipeline stops after Phase 3.` (only when every discovered PR is ST — i.e. **no** `{RELEASE_APP_REPO}`, **no** `RUX` **and no** `SUTS-API` PRs. A release containing RUX PRs is not ST-only. A release whose only non-ST PR is a SUTS-API one is also not ST-only: the ST PRs stop after Phase 3, but say explicitly that the SUTS-API PR is still outstanding with `{SUTS_API_RELEASE_OWNER}`.)
 
 If **nothing** was flagged, say so plainly — e.g. `All [N] requests are clean — nothing needs your review.` — and go straight to the closing lines.
 
@@ -483,7 +525,7 @@ In an exceptions-only report the counts are the **only** representation most req
 - `[N] linked tickets` **==** the number of qualifying entries collected in Step 2 (count the `outwardIssue` entries in `issuelinks`, don't re-tally from your own report blocks). Count **every** qualifying link, including Epics and any other issue type — the link type is the only filter (Step 2).
 - `[C] clean + [F] need review` **==** `[N]`
 - `[X] releasable PRs` **==** total PRs discovered − gate-excluded (unresolved comments / not approved / CI failed / merge conflicts) − blackout-HELD − no-PR tickets. A `BEHIND` RUX PR is **not** gate-excluded and still counts toward `[X]`.
-- `[N] ST + [M] MT + [R] RUX` **==** `[X]`
+- `[N] ST + [M] MT + [R] RUX + [S] SUTS-API` **==** `[X]`
 - Tickets and PRs are **not** 1:1 — a ticket can contribute two PRs (RUX + `{RELEASE_APP_REPO}`), so never assume the PR count equals the linked-ticket count. Derive each independently.
 - The Step 6 Dependencies list contains exactly `[X]` bullets
 
@@ -498,7 +540,9 @@ If any identity fails to balance, **re-derive from the Step 2 ticket list before
 - Normalize Jira keys to uppercase.
 - Never guess a PR URL — only report one that was found in a comment.
 - **Five PR gates** (Step 3.5b): base targeting, unresolved review comments, approval state, CI/unit tests, and mergeability. Check all five on every PR and report every gate a PR fails. A green CI run does not imply approval, an approval does not imply green CI, and neither one tells you the branch still merges cleanly.
-- **Base targeting is checked first, and a correction invalidates the other gates.** GitHub computes mergeability, merge state and review decision against the PR's declared base. A PR pointing at the wrong base can report `CLEAN`/`MERGEABLE` while being unmergeable into the branch it will actually merge into — so retarget it in triage (Gate 5), then re-run Gates 1–4 against the corrected base. Never pass a wrong base downstream for `/releases-merge` to fix: by then the release list is closed, and a revealed conflict halts Phase 3 instead of being a grooming decision.
+- **Base targeting is checked first, and a correction invalidates the other gates.** GitHub computes mergeability, merge state and review decision against the PR's declared base. A PR pointing at the wrong base can report `CLEAN`/`MERGEABLE` while being unmergeable into the branch it will actually merge into — so retarget it in triage (Gate 5), then re-run Gates 1–4 against the corrected base. Never pass a Shape A wrong base downstream for `/releases-merge` to fix: by then the release list is closed, and a revealed conflict halts Phase 3 instead of being a grooming decision.
+- **Only two base mismatches are yours to fix (Gate 5, Shape A):** a staging-based repo (`{RELEASE_APP_REPO}`, `RUX`, `SUTS-API`) pointing at `main`/`master`/`production-master`, or an ST repo pointing at `staging`. **Any other base — a feature or ticket branch — is a deliberate stack: report it, exclude it pending the developer's answer, and do not retarget it** (Shape B). Retargeting someone's stack guesses at a dependency you cannot see and produces phantom conflicts.
+- **`SUTS-API` is staging-based, not ST**, despite its `master` default branch — expect `staging` and never retarget it to `master`. Its PRs are **released by `{SUTS_API_RELEASE_OWNER}` only**: gate and list them, but do not merge them in Phase 3.
 - **A merge conflict is a hard blocker.** `mergeable == CONFLICTING` means the PR cannot be released until the developer rebases, regardless of approvals, green CI, and resolved comments. Nothing else in triage surfaces this, so never skip Gate 4. Treat `mergeable == UNKNOWN` as "not yet computed" — re-query rather than reporting it either way.
 - **A missing approver is only a blocker when the merge is `BLOCKED`.** Some repos have no branch-protection rule requiring review, so `reviewDecision: null` there is normal and must not be flagged.
 - **No CI ≠ failed CI.** ST repos have no GitHub Actions workflows, so `statusCheckRollup` comes back `null` for them. That is the expected state — never flag it, and never report it as a missing or skipped test run. Only an actual `FAILURE`/`ERROR` conclusion counts against a PR; `SKIPPED` and `NEUTRAL` checks don't either.
@@ -630,11 +674,12 @@ One bullet per PR = **just the PR link** — no Smoke-Check URL, SUTS, or migrat
 * [https://github.com/{GITHUB_ORG}/RUX/pull/{N}](https://github.com/{GITHUB_ORG}/RUX/pull/{N})
 ```
 
-**PR ordering rule — ST, then MT, then RUX:**
+**PR ordering rule — ST, then MT, then RUX, then SUTS-API:**
 
-1. **ST PRs first** — every non-`{RELEASE_APP_REPO}`, non-`RUX` repo. Group by repo, sort repos **alphabetically** by repo name; where one repo has multiple PRs, sort those by **PR number ascending**.
+1. **ST PRs first** — every repo that is not `{RELEASE_APP_REPO}`, `RUX` or `SUTS-API`. Group by repo, sort repos **alphabetically** by repo name; where one repo has multiple PRs, sort those by **PR number ascending**.
 2. **`{RELEASE_APP_REPO}` (MT) PRs next** — sorted by **PR number ascending**.
-3. **`RUX` PRs last** — sorted by **PR number ascending**.
+3. **`RUX` PRs next** — sorted by **PR number ascending**.
+4. **`SUTS-API` PRs last** — sorted by **PR number ascending**. They sit at the end because they are **not merged in Phase 3** (`{SUTS_API_RELEASE_OWNER}` releases them); keeping them in their own trailing block stops `/releases-merge` from reading one as an ST or app-repo PR.
 
 Order by repo class, **not** by ticket. A ticket with PRs in two repos contributes one bullet to each section; its PRs are deliberately not adjacent in the list.
 
