@@ -552,6 +552,7 @@ If any identity fails to balance, **re-derive from the Step 2 ticket list before
 - **RUX PRs go `BEHIND` in lockstep — never treat that as a defect.** Because RUX disallows merge commits, merging any one PR to `staging` puts every other open RUX PR into `BEHIND` at once. A `BEHIND` reading at triage time is a statement about the repo, not about the PR. Do not flag it, do not exclude it, and do not tell the user to chase the author. `/releases-merge` Step 4b resolves them one at a time during the merge run. The only thing to surface is a pacing heads-up when the release carries more than one RUX PR.
 - **SUTS handling**: SUTS-tagged tickets (detected in Step 3.7) are **not excluded** — they are included and labeled with `_(SUTS)_` on the PR line.
 - **Release blackout**: During the blackout window (computed in Pre-flight), only **P0/P1** tickets are eligible — all others are HELD (Step 3.8), excluded from the Step 6 Dependencies list and from Phase 3 merging unless the user explicitly overrides. Outside the window the gate is a no-op. Always show the computed window in the report header; show a ticket's priority only when it is HELD (or otherwise flagged).
+- **Review tabs are grouped one Jira tab per ticket, followed by all that ticket's PRs** (Step 6.5). A 2-PR ticket is 3 tabs — not 2 (an orphaned PR) and not 4 (a duplicate Jira tab). Derive the list with a script, print the per-group pairings before launching, and launch in ~12-tab batches without splitting a group.
 
 ---
 
@@ -693,60 +694,85 @@ The linked tickets are already linked to the story (that's how Step 2 found them
 
 ## Step 6.5 — Open review tabs in Chrome
 
-After the Jira description has been written (Step 6), launch Chrome tabs so the user can eyeball every linked ticket alongside its PR. This runs on the local Windows machine (Chrome is at `C:\Program Files\Google\Chrome\Application\chrome.exe`, registered in App Paths so `chrome` resolves).
+After the Jira description has been written (Step 6), launch Chrome tabs so the user can eyeball every linked ticket alongside its PR(s). This runs on the local Windows machine (Chrome is at `C:\Program Files\Google\Chrome\Application\chrome.exe`, registered in App Paths so `chrome` resolves).
+
+**The shape in one line:** one Jira tab per ticket, immediately followed by all of that ticket's PRs, contiguous — groups ordered by the Dependencies list. Never a second Jira tab for the same ticket; never a PR tab separated from its ticket.
 
 ### Build the tab URL list
 
-Order the tabs to match the story's **Dependencies PR list** (Step 6) — the ST-first, then-MRNexus order that `/releases-merge` reads top-to-bottom — not the story's link order. Every tab is an **interleaved pair**: the ticket's Jira URL first, then its PR URL immediately after.
+Tabs are emitted in **ticket groups**. A group is **one Jira tab followed by every PR that ticket owns**, contiguously. A ticket never gets more than one Jira tab, and a ticket's PRs are never separated from each other by another ticket's tabs.
+
+Group order follows the story's **Dependencies PR list** (Step 6) — the ST → MT → RUX → SUTS-API order that `/releases-merge` reads top-to-bottom — not the story's link order.
 
 Build the list in two passes:
 
-1. **Dependencies pass (in PR-list order).** Walk the Dependencies PR list top-to-bottom. For each PR, emit its owning ticket's Jira URL, then that PR URL.
-   - **Every PR in the Dependencies list gets its own tab — no exceptions.** The Dependencies list and the PR tabs are 1:1: if the list has `[X]` bullets, the launch command contains exactly `[X]` PR URLs. Walk the *PR list*, not the ticket list — a ticket is never "already covered" because one of its PRs was emitted earlier.
-   - `MULTI-PR` ticket → its PRs sit at **different positions in different repo sections** (ST, then MT, then RUX), and each one still gets a tab at its own position. Emit the ticket's **Jira** tab once only, immediately before the **first** of its PRs; every subsequent PR of that ticket is emitted bare, at its own position, with no repeated Jira tab. Emitting the Jira tab once must never collapse the ticket's other PRs — the de-duplication applies to the Jira URL alone.
-2. **Trailing pass (excluded / no-PR tickets).** After the Dependencies pass, append every linked ticket **not** already emitted above — i.e. tickets excluded from the Dependencies list: HELD (blackout, Step 3.8), `⚠ UNRESOLVED COMMENTS` (Step 3.5b), and `NEEDS MANUAL REVIEW` (no PR — Step 3.5). Walk these in Step 5 report (link) order. For each, emit its Jira URL, then its PR URL **if one was discovered** (HELD and unresolved-comment tickets have a PR even though it's excluded from the release — pair it so the user can review it); `NEEDS MANUAL REVIEW` tickets get the Jira tab only.
+1. **Dependencies pass.** Walk the Dependencies PR list top-to-bottom. For each PR:
+   - If its owning ticket has **already been emitted**, **skip this PR entirely** — it was already opened as part of that ticket's group. Do not emit a second Jira tab, and do not emit the PR again.
+   - Otherwise, emit the group: the ticket's Jira URL, then **all** of that ticket's PRs. Order the ticket's own PRs among themselves by repo class (ST → MT → RUX → SUTS-API), matching Dependencies order. This **pulls a later PR forward** into the group — that is intended, and it is why the skip rule above exists.
+2. **Trailing pass (excluded / no-PR tickets).** After the Dependencies pass, append a group for every linked ticket **not** already emitted — i.e. tickets excluded from the Dependencies list: HELD (blackout, Step 3.8), `⚠ UNRESOLVED COMMENTS` (Step 3.5b), `⚠ MERGE CONFLICTS` / `⚠ STACKED PR` (Step 3.5b), `⚠ CI FAILED` (Step 3.5b), and `NEEDS MANUAL REVIEW` (no PR — Step 3.5). Walk these in Step 5 report (link) order. Emit each ticket's Jira URL followed by its discovered PR(s) if any — excluded tickets still have PRs worth reviewing; `NEEDS MANUAL REVIEW` tickets get the Jira tab only.
+
+**The grouped shape is the requirement, not an implementation detail.** A ticket with two PRs produces **3 tabs** (ticket, PR, PR) — never 4, and never a bare PR sitting under an unrelated ticket. If a ticket's PRs land in different repo sections of the Dependencies list, the group still stays contiguous at the position of that ticket's *first* PR.
 
 **URLs:**
-- **Ticket URL:** `https://{JIRA_BASE_URL}/browse/{TICKET-KEY}` (always emitted — one per linked ticket, exactly once).
-- **PR URL(s):** the PR(s) discovered for that ticket in Step 3.
-- **`RUX` PRs get tabs like any other** — they are part of the release now. A ticket with both a `RUX` and a `{RELEASE_APP_REPO}` PR emits its Jira tab once, then both PR tabs at their respective positions in Dependencies order.
-- **Any repo combination can pair, not just RUX + `{RELEASE_APP_REPO}`.** An ST repo pairs with `{RELEASE_APP_REPO}` just as often — e.g. an ST admin-tooling PR that queues a job plus the `{RELEASE_APP_REPO}` PR that executes it. Both halves need tabs. Never treat "one PR already opened for this ticket" as reason to skip the other; the repo names are irrelevant to the rule.
+- **Ticket URL:** `https://{JIRA_BASE_URL}/browse/{TICKET-KEY}` — exactly one per linked ticket, at the head of its group.
+- **PR URL(s):** the PR(s) discovered for that ticket in Step 3 — all of them, contiguous, immediately after the ticket.
+- **`RUX` PRs get tabs like any other** — they are part of the release now. A ticket with both a `RUX` and a `{RELEASE_APP_REPO}` PR is one 3-tab group: ticket, `{RELEASE_APP_REPO}` PR, `RUX` PR.
+- **Any repo combination can pair, not just RUX + `{RELEASE_APP_REPO}`.** An ST repo pairs with `{RELEASE_APP_REPO}` just as often — e.g. an ST admin-tooling PR that queues a job plus the `{RELEASE_APP_REPO}` PR that executes it. Both halves belong in the same group so they get eyeballed together. Never drop a ticket's second PR, and never give it its own duplicate Jira tab.
 
 **Open every linked ticket, including excluded ones** so the user can manually review them. This is intentionally broader than the Step 6 Dependencies list; the releasable set simply comes first (Dependencies order), with excluded tickets trailing. Do **not** filter the tab list by release-eligibility.
 
-> Ordering example — Dependencies list is `[st-repo#10, MRNexus#20, MRNexus#21]` (owned by T2, T1, T4), plus T3 is NEEDS MANUAL REVIEW (no PR) and T5 is HELD (has PR #99):
-> `T2-jira, st-repo#10, T1-jira, MRNexus#20, T4-jira, MRNexus#21,` **then trailing:** `T3-jira (no PR), T5-jira, #99`
+> **Single-PR example.** Dependencies list is `[st-repo#10, {RELEASE_APP_REPO}#20, {RELEASE_APP_REPO}#21]` (owned by T2, T1, T4), plus T3 is NEEDS MANUAL REVIEW (no PR) and T5 is HELD (has PR #99):
+>
+> `T2-jira, st-repo#10, T1-jira, {RELEASE_APP_REPO}#20, T4-jira, {RELEASE_APP_REPO}#21,` **then trailing:** `T3-jira (no PR), T5-jira, #99`
 >
 > **Multi-PR example — the case that is easiest to get wrong.** Dependencies list is `[st-repo#10, {RELEASE_APP_REPO}#20, {RELEASE_APP_REPO}#21, RUX#30]`, where **T1 owns both `st-repo#10` and `{RELEASE_APP_REPO}#20`**, T2 owns `{RELEASE_APP_REPO}#21`, and T3 owns `RUX#30`:
 >
-> `T1-jira, st-repo#10, {RELEASE_APP_REPO}#20, T2-jira, {RELEASE_APP_REPO}#21, T3-jira, RUX#30`
+> `T1-jira, st-repo#10, {RELEASE_APP_REPO}#20,` `T2-jira, {RELEASE_APP_REPO}#21,` `T3-jira, RUX#30`
 >
-> That is **7 tabs for 4 PRs and 3 tickets**. T1's Jira tab appears once, but **both** of its PRs get tabs — `{RELEASE_APP_REPO}#20` is emitted bare, with no second T1 Jira tab before it. Emitting `st-repo#10` and stopping there would silently drop half of T1's release.
+> That is **7 tabs for 4 PRs and 3 tickets**, in **3 groups**. T1 is a 3-tab group: its Jira tab once, then *both* of its PRs together — `{RELEASE_APP_REPO}#20` is pulled forward out of the MT section to sit beside `st-repo#10`. When the walk later reaches `{RELEASE_APP_REPO}#20` at its own Dependencies position, T1 is already emitted, so that PR is **skipped** rather than re-opened.
 >
-> **Why this rule exists (2026-09-15, BLTE-24146).** That ticket shipped an ST admin-tooling PR that queues a per-license renewal job plus the `{RELEASE_APP_REPO}` PR that honors the job's new flag. Only the ST PR got a tab. Both were in Dependencies and both merged, so the release was correct — but the pair never got eyeballed together during grooming, and the developer's own testing note warned that deploying one half without the other makes the job **silently renew every license in the tenant** while the run log still reads as a pass.
+> Two ways to get this wrong, both seen in practice:
+> - Emitting `st-repo#10` and stopping there — silently drops half of T1's release.
+> - Emitting `T1-jira, st-repo#10` and then later `T1-jira, {RELEASE_APP_REPO}#20` as a second pair — 4 tabs for one ticket, with the same Jira page open twice.
+>
+> **Why the grouping rule exists (2026-09-23, BLTE-24373).** Triage emitted each ticket's Jira tab only on first encounter and left later PRs bare at their own Dependencies positions. Because `RUX` and `SUTS-API` sort last but their tickets (BLTE-21205, BLI-2944) were emitted much earlier beside their `{RELEASE_APP_REPO}`/ST halves, `RUX#1970` and `SUTS-API#63` ended up appended after the final MT PR with no ticket of their own — reading as though the last MT ticket (BLI-9428) owned three PRs. The user closed all 65 tabs and asked for a relaunch. A second attempt paired every PR with its own ticket, which fixed the orphaning but opened 4 tabs for each 2-PR ticket. Grouped emission is the shape that satisfies both: no orphans, no duplicates.
+>
+> **Why pairing matters at all (2026-09-15, BLTE-24146).** That ticket shipped an ST admin-tooling PR that queues a per-license renewal job plus the `{RELEASE_APP_REPO}` PR that honors the job's new flag. Only the ST PR got a tab. Both were in Dependencies and both merged, so the release was correct — but the pair never got eyeballed together during grooming, and the developer's own testing note warned that deploying one half without the other makes the job **silently renew every license in the tenant** while the run log still reads as a pass.
 
 ### Verify the count before launching
 
-The PR-tab count is the check that catches a dropped pair. Before running the launch command, confirm:
+Counting PR tabs alone does **not** catch the orphaning bug — an orphaned PR still counts. Check the **group structure**, not just the totals. Before launching, confirm all four:
 
-- **PR tabs == the number of bullets in the Step 6 Dependencies list**, exactly. Count the `pull/` URLs in the command you are about to run and compare against the Dependencies bullet count — they must match.
-- **Jira tabs == the number of linked tickets** (Step 2 count), each appearing exactly once.
-- Total tabs == (every PR exactly once) + (every linked ticket exactly once), plus any excluded ticket's PR emitted in the trailing pass.
+- **Jira tabs == the number of linked tickets** (Step 2 count), each appearing **exactly once**. A ticket appearing twice means groups were not merged.
+- **PR tabs == the number of bullets in the Step 6 Dependencies list**, plus any excluded tickets' PRs from the trailing pass.
+- **Every PR tab is inside its own ticket's group.** Walk the built list start to finish: each `pull/` URL must be preceded — with no other ticket's Jira URL in between — by the Jira URL of the ticket that owns it. This is the check that catches an orphan.
+- **Every multi-PR ticket forms one contiguous run** of `1 + (its PR count)` tabs. For a 2-PR ticket that is 3 tabs, not 2 and not 4.
 
-If the PR-tab count is lower than the Dependencies bullet count, a multi-PR ticket has been collapsed — re-derive the list from the **PR list** rather than from the ticket list before launching. Report the counts in the confirmation line, e.g. `Opened 7 tabs in Chrome (3 tickets + 4 PRs)`, so a mismatch is visible after the fact.
+Total tabs == (linked tickets) + (all their PRs). For the common case that is `[T] + [P]`.
+
+If any check fails, **re-derive the list before launching** — do not adjust a count to make the arithmetic work. Report the counts in the confirmation line, e.g. `Opened 7 tabs in Chrome (3 tickets + 4 PRs, 3 groups)`, so a mismatch is visible after the fact.
+
+**Derive the list with a script, not by hand.** The grouping, the skip rule and the ordering are mechanical and easy to get wrong in prose. Write the ticket→PR mapping to a scratchpad file and generate the URL list with `node -e`, then print the per-group labels so the pairings can be eyeballed **before** any tab opens. A printed group list that reads `TICKET + repo#N + repo#N` per line is the cheapest possible verification.
 
 ### Launch
 
-Reuse the user's current Chrome window (append tabs — do **not** pass `--new-window`). Pass all URLs as arguments in the built order; Chrome opens them as tabs left-to-right in that order. Run via the Bash tool:
+Reuse the user's current Chrome window (append tabs — do **not** pass `--new-window`). Chrome opens the URLs as tabs left-to-right in argument order.
+
+**Launch in batches of roughly 12 tabs, and never split a ticket group across two batches.** A 60+ tab release arrives as one unreviewable wall otherwise; batching also means a mistake costs one batch rather than the whole set. Fill each batch with whole groups up to the ~12-tab budget, then start a new one.
+
+Write each batch to its own `.ps1` in the scratchpad directory and run them in order — inline `-Command` with 60 quoted URLs is fragile to quoting:
 
 ```bash
-powershell.exe -NoProfile -Command "Start-Process chrome -ArgumentList @('URL1','URL2','URL3', ...)"
+# one file per batch, e.g. batch1.ps1:
+#   Start-Process chrome -ArgumentList @('URL1','URL2',...)
+for i in 1 2 3 4 5 6; do powershell.exe -NoProfile -File batch$i.ps1; done
 ```
 
-Substitute the ordered URL list for `'URL1','URL2',…` (single-quoted, comma-separated). Keep them in one `Start-Process` call so tab order is deterministic.
+Keep each batch in one `Start-Process` call so tab order within it is deterministic.
 
 - If Chrome isn't found / `Start-Process` errors, report the failure and **print the ordered URL list** in the chat so the user can open the tabs manually — do not block the rest of the skill.
-- Report a one-line confirmation, e.g. `Opened N tabs in Chrome ([T] tickets + [P] PRs).` **`[P]` must equal the Dependencies bullet count** — if it doesn't, a multi-PR ticket was collapsed; fix the list and re-launch rather than reporting the lower number.
+- Report a one-line confirmation naming the group count, e.g. `Opened 65 tabs in Chrome (31 tickets + 34 PRs, 31 groups, 6 batches).`
+- **If the user says the pairings are wrong, do not relaunch from the same derivation.** Read back the list that was actually built (the scratchpad file or the `.ps1`), find the specific tab positions they are describing, and say plainly what the defect was before rebuilding. A relaunch that repeats the same grouping logic wastes their time twice.
 
 ## Step 7 — Verify automation subtasks + description grade
 
@@ -794,7 +820,7 @@ Always end with the story link regardless of subtask/grade status:
 ```
 Story: https://{JIRA_BASE_URL}/browse/{STORY-KEY}
 PRs written to Dependencies: [N] ([list ST repos], [MT count], [RUX count])
-Review tabs: [✓ Opened N tabs in Chrome ([T] tickets + [P] PRs)] OR [⚠ Chrome launch failed — URL list printed above]
+Review tabs: [✓ Opened N tabs in Chrome ([T] tickets + [P] PRs, [T] groups, [B] batches)] OR [⚠ Chrome launch failed — URL list printed above]
 Subtasks: [✓ Coding/Development ({JIRA_PROJECT}-XXXXX) + ✓ Manual Testing ({JIRA_PROJECT}-XXXXX)] OR [⚠ Not yet created — check automation]
 Description grade: [✓ good-A] OR [⚠ {actual grade} — review description] OR [— not yet graded]
 ```
