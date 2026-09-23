@@ -116,6 +116,9 @@ gh release list --repo {GITHUB_ORG}/{repo} --limit 1 --json tagName
 Parse the semver from the tag (strip leading `v`). If no releases exist, start from `v1.0.0` and note it.
 
 ### 3d — Merge the PR
+
+Run the pre-merge state check first (see "Pre-merge state check" above) and **stop the repo's merges if it reads `CONFLICTING`/`DIRTY`** rather than skipping to the next PR.
+
 ```
 gh pr merge {number} --repo {GITHUB_ORG}/{repo} --merge
 ```
@@ -163,6 +166,8 @@ RUX lands every feature PR as a single-parent squash (confirm with `gh api repos
 
 Report each merge as it completes.
 
+Run the pre-merge state check before each one. **If a PR reads `CONFLICTING`/`DIRTY`, stop that repo's merges and ask the user** — do not skip it and carry on down the list. In an app repo this matters more than in ST: every PR shares one `staging` head, so one conflict means the remaining PRs are no longer being merged against the base triage gated them on.
+
 #### RUX merges are serial — expect one rebase pause per remaining PR
 
 **In RUX, merging one PR puts every other open RUX PR into `BEHIND` immediately.** Merge commits are disabled (`allow_merge_commit: false`), so there is no merge commit to absorb the new `staging` head — each remaining branch must be updated before it can merge, even one that read `CLEAN` seconds earlier. This is normal RUX behavior, **not** a defect in the PR and **not** something triage failed to catch. `{RELEASE_APP_REPO}` and ST repos do not behave this way.
@@ -186,7 +191,7 @@ Merge RUX PRs **one at a time**, and after each merge:
 
 **Never block the other tracks on a RUX pause.** While waiting on a RUX rebase, the `{RELEASE_APP_REPO}` and ST work continues — the tracks are independent (see Track independence above). Only the RUX track waits.
 
-> A `BEHIND` RUX PR arriving at this step is expected and needs no commentary about triage having missed it. What *would* be a real finding is `CONFLICTING`/`DIRTY` — that is a genuine conflict, and triage should have caught it (see `/releases-triage` Gate 4).
+> A `BEHIND` RUX PR arriving at this step is expected and needs no commentary about triage having missed it. What *would* be a real finding is `CONFLICTING`/`DIRTY` — a genuine conflict. **Stop the repo's merges and ask the user** (see "Conflict mid-run" above). Note that triage having passed it `CLEAN` is not a triage failure when an earlier merge in *this* run moved the head — that is PRs in the release interacting, which is precisely why the run stops to ask rather than skipping ahead.
 
 ### 4c — Create the staging → main PR
 After all feature PRs are merged into that repo's staging, create the release PR:
@@ -413,15 +418,55 @@ Omit any track section that had no PRs today. If there are no flagged/skipped PR
 
 ---
 
+## Conflict mid-run — STOP, do not skip past it
+
+**If any PR in the release set becomes `CONFLICTING` / `DIRTY`, or `gh pr merge` fails with "the merge commit cannot be cleanly created", stop merging into that repo immediately and ask the user how to proceed.** Do not skip the PR and continue down the list.
+
+Triage gated every PR as mergeable against the `staging` head *as it was at grooming time*. A conflict appearing now means **the PRs in this release interact with each other** — the head has moved under them. Every remaining PR is therefore being merged against a base that no longer matches what was gated, and the next conflict is likelier than the last. Continuing past the first one silently converts a reviewed release into an unreviewed one.
+
+It also exceeds the user's authorization. Their go-ahead was for the set as triaged. A set that has started conflicting with itself is a different set, and only they can decide whether to proceed with it.
+
+When it happens:
+
+1. **Stop merging into that repo.** Merges already completed stand — they are irreversible. Say exactly which PRs are in and which are not.
+2. **Identify the likely cause.** Compare the conflicting PR's files against the PRs just merged:
+   ```bash
+   gh api repos/{GITHUB_ORG}/{repo}/pulls/{conflicting}/files --jq '[.[].filename]'
+   gh api repos/{GITHUB_ORG}/{repo}/pulls/{just_merged}/files --jq '[.[].filename]'
+   ```
+   Sibling PRs from one ticket series (e.g. "batch 1 of 4" / "batch 2 of 4") converting the same classes are the usual culprit, and are worth naming explicitly — it means the batches were never tested against each other.
+3. **Report and ask**, naming the PR, its ticket, its author, and the overlap. Offer: send the conflicting PR back for a rebase and drop it from today's release; hold the release for the rebase; or stop the repo's merges here.
+4. **Re-verify before resuming.** Once the user decides, re-query `mergeable`/`mergeStateStatus` on **every** remaining PR in that repo before merging any of them — not just the one that conflicted. Treat `UNKNOWN` as "not computed yet" and re-query rather than merging blind.
+5. The other repos/tracks are unaffected and may continue.
+
+> **Why this rule exists (2026-09-23, BLTE-24373).** Merging MRNexus#7309 (BLTE-23978, "batch 1 of 4" of the `businesstaskdata` dedup conversion) made its sibling #7321 (BLTE-23981, "batch 2 of 4") `CONFLICTING` — both converted overlapping component classes, and they had been gated independently. The then-current rule said "if `gh pr merge` fails for any reason (conflicts, …), report the error and move on to the next PR", so the run skipped #7321 and merged 15 further PRs without asking. The user had authorized merging a clean 31-PR set, not a set that had begun conflicting with itself. Nothing was lost that release, but the decision to keep going was not one to make unilaterally.
+
+## Pre-merge state check — required before every merge
+
+Query the PR immediately before merging it, and **act on the result** rather than merging and inspecting the outcome:
+
+```bash
+gh pr view {number} --repo {GITHUB_ORG}/{repo} --json state,mergeable,mergeStateStatus
+```
+
+- `MERGED` → already done, skip with a note.
+- `CONFLICTING` / `DIRTY` → **stop per the section above.** Do not attempt the merge.
+- `UNKNOWN` → GitHub has not finished computing mergeability (normal within seconds of a prior merge). Wait and re-query; never treat it as either pass or fail.
+- `MERGEABLE` with `CLEAN` / `UNSTABLE` / `HAS_HOOKS` / `BEHIND` → merge it.
+
+**Merge one PR per tool call when a loop would hide a stop condition.** A shell loop that merges many PRs cannot pause to ask, and an interrupted loop may have already completed some of its merges — leaving the run's own status report wrong. If a loop is used, it must re-check each PR's state before its merge and `break` on a conflict rather than `continue`.
+
+> **Corollary, same incident:** a batched merge loop was interrupted by the user mid-execution. Five merges had already completed before the interrupt landed, so the status report given immediately afterwards undercounted the merged set (4 instead of 9) until timestamps were checked with `gh pr view --json mergedAt,mergedBy`. After any interruption, **re-derive state from the API before reporting it** — never from which commands appear to have run.
+
 ## Important Rules
 
 - Always report progress as each merge completes — do not batch output until the end.
-- Never force-merge a PR (`--force` or bypassing required checks) — if a merge fails, report the error and skip.
+- Never force-merge a PR (`--force` or bypassing required checks).
 - Never push directly to `main`, `master`, `production-master`, or `staging` — only merge via PR.
-- If `gh pr merge` fails for any reason (conflicts, required checks not met, etc.), report the error and move on to the next PR.
+- **A merge conflict STOPS the run for that repo — it is never skipped past.** See "Conflict mid-run" below. Other failure kinds (required check not met, permissions, transient API error) are reported and skipped, and the run continues.
 - For each app repo's staging→main PR: create it even if some of that repo's PRs were skipped, as long as at least one was merged. If zero PRs were merged for a repo, skip that repo's PR creation and note it.
 - **RUX and `{RELEASE_APP_REPO}` are parallel, independent tracks.** Same process, separate everything: staging branches, release PRs, CI runs, `/fast-forward` authorizations, tag series (`v22.x.y` vs `v1.x.y`), and deploys. A failure or hold on one track never blocks the other — run whichever tracks have PRs and report them separately.
 - **Never assume RUX is out of scope.** As of 2026-08-25 RUX releases are part of this process; releasing MT while silently dropping RUX ships half the work.
 - **A `BEHIND` RUX PR is expected, not a blocker.** Merging any RUX PR puts every other open RUX PR into `BEHIND` at once, so a release with N RUX PRs needs about N−1 rebases. Merge them serially: on each `BEHIND`, pause the RUX track, tell the user which PR and author, wait for confirmation, re-verify `CLEAN`, then merge (Step 4b). Never rebase the branch yourself — repository rules require Copilot review to re-run on changes, so the author does it locally. Other tracks keep running while RUX waits.
-- Roll blocked tickets forward rather than holding the release: if a developer can't resolve a Copilot finding or rebase in time and the ticket is P2/P3, move it to the next release story and continue. P0/P1 tickets warrant chasing an answer instead.
+- Roll blocked tickets forward rather than holding the release: if a developer can't resolve a Copilot finding or rebase in time and the ticket is P2/P3, move it to the next release story and continue. P0/P1 tickets warrant chasing an answer instead. **This is a recommendation to put to the user, not a decision to make unilaterally** — rolling a ticket out of an authorized release changes what ships, so say what you propose and let them choose. It does not override the stop-on-conflict rule.
 - **A missing release tag is diagnosed, never waited out.** If no tag appears after `/fast-forward`, read the release workflow run (step 4g-ii) and report the real cause. A green run with `semantic-release` succeeding but the notify / fix-version jobs **skipped** means semantic-release deliberately declined because no commit carries a releasing prefix (`ci:`, `chore:`, `docs:`, `test:`, `style:`, `refactor:` do not release) — waiting will never produce a tag. Never report a bare "automation may still be running" timeout, never pass a non-existent tag to Phase 5, and never hand-create the tag as the default fix (it skips release notes and Fix Version stamping and can break the version series).
