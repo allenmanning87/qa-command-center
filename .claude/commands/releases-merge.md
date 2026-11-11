@@ -248,7 +248,7 @@ until ! gh pr checks {staging_pr_number} --repo {GITHUB_ORG}/{APP_REPO} 2>&1 | g
 
 | Track | Gate before `/fast-forward` |
 |---|---|
-| **MT** (`{RELEASE_APP_REPO}`) | staging PR CI green → **Phase 4 (`/releases-regression`) passes** → user's explicit go-ahead |
+| **MT** (`{RELEASE_APP_REPO}`) | staging PR CI green → **Phase 4 (`/releases-regression`) passes** → **one approving review** (`reviewDecision == APPROVED`) → user's explicit go-ahead |
 | **RUX** | staging PR CI green → **one approving review** (`reviewDecision == APPROVED`) → user's explicit go-ahead |
 
 **Do not run Phase 4 for RUX, and do not offer to.** RUX runs no e2e regression suite at any point: it enforces unit tests + lint through a **pre-push git hook**, so problems are caught before a PR exists, and its post-deploy verification is a manual smoke check (open a new-UI URL, confirm it loads and login works). Never describe a RUX release as regression-verified.
@@ -262,10 +262,10 @@ Each track's gate is independent and authorized separately — a green MT regres
 **Both tracks' gates may be satisfied at the same time**, and both `/fast-forward` comments may be posted at the same time when both are clean and both authorized. There is no ordering requirement anywhere in Phase 3 or Phase 4 — run them in parallel to save wall-clock. (Only MT has a Phase 4 gate at all; RUX's runs no regression.) The strict **ST → RUX → MT** sequencing applies **only** to the Phase 5 production deploys.
 
 - **If CI is not green:** report the failing checks with URLs so the user can send them to the developer. Do **not** run Phase 4 and do **not** post `/fast-forward`. Stop.
-- **If CI is green — MT track:** **do not post the `/fast-forward` comment automatically, and do not ask for `/fast-forward` go-ahead yet.** Hand off to Phase 4: invoke the `/releases-regression` skill. Phase 4 triggers the regression run, polls it to completion, and gates `/fast-forward` on the entire run concluding `success`.
+- **If CI is green — MT track:** **do not post the `/fast-forward` comment automatically, and do not ask for `/fast-forward` go-ahead yet.** Do not wait for the approving review before regression: Phase 4 runs regardless of approval, and approval is only needed before `/fast-forward`. Hand off to Phase 4: invoke the `/releases-regression` skill. Phase 4 triggers the regression run, polls it to completion, and gates `/fast-forward` on the entire run concluding `success`.
 - **If CI is green — RUX track:** **skip Phase 4 entirely.** Check `reviewDecision`: if it is not `APPROVED`, report that the release PR needs one approving review (requested from the RUX team) and name that as the only remaining blocker. Once it reads `APPROVED`, ask the user for the RUX `/fast-forward` go-ahead directly.
   - **Phase 4 fails** → `/fast-forward` is blocked. Report the failing jobs/steps with the run URL. Stop.
-  - **Phase 4 passes** → Phase 4 presents the `/fast-forward` go-ahead prompt (staging CI green + regression green) and waits for the user's explicit authorization before control returns here at step 4e. GitHub PR approval status does NOT count as confirmation — the user must explicitly authorize in the current conversation.
+  - **Phase 4 passes** → check `reviewDecision`. If it is not `APPROVED`, report that the MT release PR needs one approving review and name that as the only remaining blocker; do not ask for the go-ahead until it reads `APPROVED`. Once approved, Phase 4 presents the `/fast-forward` go-ahead prompt (staging CI green + regression green + approved) and waits for the user's explicit authorization before control returns here at step 4e. GitHub PR approval status does NOT count as confirmation — the user must explicitly authorize in the current conversation.
 
 ### 4e — Trigger fast-forward merge
 Only after Phase 4 has passed **and** the user has explicitly authorized `/fast-forward` (via the Phase 4 Step 4 prompt):
@@ -276,11 +276,9 @@ MSYS_NO_PATHCONV=1 gh pr comment {staging_pr_number} --repo {GITHUB_ORG}/{APP_RE
 
 **Authorize each track separately.** A go-ahead for the MT fast-forward is **not** a go-ahead for RUX. Ask for each one explicitly, naming the repo, and post only the comment the user authorized.
 
-> **RUX needs one approving review on the release PR** before `/fast-forward`. It is requested from the RUX team. One approval is the norm — check `reviewDecision` is `APPROVED` before posting.
+> **Both RUX and `{RELEASE_APP_REPO}` (MT) need one approving review on the release PR** before `/fast-forward`. It is requested from that track's team. One approval is the norm — check `reviewDecision` is `APPROVED` before posting. For MT, treat `reviewDecision: REVIEW_REQUIRED` or `mergeStateStatus: BLOCKED` on the staging → main PR as a blocker for `/fast-forward` only. It does not hold up the Phase 4 regression run.
 >
-> **`{RELEASE_APP_REPO}` does not.** The MT release PR proceeds on **CI-green alone** — do not treat `reviewDecision: REVIEW_REQUIRED` or `mergeStateStatus: BLOCKED` on the MT staging → main PR as a blocker, and do not wait for a reviewer. Once its CI is green, go straight to Phase 4 (`/releases-regression`) exactly as before RUX existed. The GitHub approval requirement is RUX-only.
->
-> **Neither repo's `/fast-forward` is ever automatic.** This distinction is only about whether a *GitHub reviewer approval* is required to move forward — it does not relax the authorization rule. **Both RUX and `{RELEASE_APP_REPO}` require the user's explicit go-ahead in the conversation before their respective `/fast-forward` comment is posted**, asked for separately per track. A green CI, a passing Phase 4, and a GitHub approval are prerequisites, never authorization.
+> **Neither repo's `/fast-forward` is ever automatic.** **Both RUX and `{RELEASE_APP_REPO}` require the user's explicit go-ahead in the conversation before their respective `/fast-forward` comment is posted**, asked for separately per track. A green CI, a passing Phase 4, and a GitHub approval are prerequisites, never authorization.
 
 Separate authorization does not mean separate timing: once both are authorized, **both `/fast-forward` comments may be posted at the same time.** Nothing about fast-forward contends between the repos — they merge and tag independently.
 
@@ -399,6 +397,7 @@ MT Release ({RELEASE_APP_REPO}):
 ✓ Staging → Main PR: {URL}
 CI: [✓ all checks green] OR [⚠ failing: {check name} — {url}] OR [⏳ still running — check manually]
 Phase 4 regression: [→ handing off to /releases-regression] OR [✓ passed — {run_url}] OR [⚠ failed — {run_url}] OR [pending CI green]
+Approval: [✓ approved by {login}] OR [⚠ needs 1 approving review before /fast-forward — ask the MT team]
 Tag: [v{version}] OR [pending /fast-forward] OR [⚠ none — semantic-release declined (no releasable commits); code merged to main, Phase 5 skipped for this track — {run_url}]
 
 RUX Release:

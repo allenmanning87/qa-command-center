@@ -17,3 +17,6 @@ docs/designs/wip-acceptance-criteria.md
 # Any skill containing tenant names, schema names, or customer data must be
 # listed here (or kept in neumo-knowledge) before it is written.
 .claude/commands/kb-index.md
+
+# Local Claude Code overrides (contain org/repo-specific permission rules)
+.claude/settings.local.json
