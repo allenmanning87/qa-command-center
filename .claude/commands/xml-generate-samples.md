@@ -43,7 +43,9 @@ The ticket number or text. This reveals:
 - Calculation rules and rates for each tax/penalty/interest field (if provided)
 - Total field formula and PaymentAmount validation logic (P&I Paid vs Not Paid)
 
-Do **not** read the PR diff. The PR is what is being tested — derive all field names, calculation rules, and logic exclusively from the ticket text and the screenshots. Using the PR would build test files to match the PR's implementation, including any bugs in it.
+Do **not** read the PR diff to derive test content. The PR is what is being tested — derive all field names, calculation rules, and logic exclusively from the ticket text and the screenshots. Using the PR would build test files to match the PR's implementation, including any bugs in it.
+
+**One exception — the hardcoded-rate audit (Step 1.5).** If a PR is provided, you may read it *only* to confirm the filing body takes its rates from the rate table instead of hardcoding them. Nothing you see there may change a field name, formula, rate value, expected outcome, or any value in any file.
 
 **After reading the ticket:** If the ticket does not explicitly list the withholding rate(s), penalty rate, and interest rate, you must collect item 7 before proceeding.
 
@@ -68,9 +70,49 @@ A short, filesystem-safe name for the client (e.g., `cityoftownky`, `examplecoun
 
 **7. (Conditional) Rate table screenshot**
 *Ask only if the ticket does not specify withholding rate(s), penalty rate, and interest rate.*
-A screenshot of the database rate table showing the `form_id`, `rate_name`, and `value` columns for this form. Ask: *"The ticket doesn't include the calculation rates. Can you save a screenshot of the rate table (e.g., from an admin DB query filtering on this form's ID) to disk and provide the full file path? Claude will move it into `_ticket\` automatically."*
+**Try the databases first.** Query the rate table yourself with the read-only DB tools (`db-prod`, and `db-staging` to compare), as described in Step 1.5. Only ask for a screenshot if the databases are unavailable or the form can't be identified.
+
+The rate table is `{tenant}_data.rate` (columns `id`, `formid`, `rate_name`, `value`, `beneficiaryid`, `datatype`, `date_start`, `date_end`). **It holds rows for every form, so always filter on this form's `formid`.** Rows with `formid = 0` are legacy/global and rows for other forms use similar rate names, so an unfiltered query shows duplicates and conflicting rates that are not real. Find the `formid` in `{tenant}_data.taxform` (`taxformid`, matching `name` or `alias` to the form in the ticket).
+
+If you do need a screenshot, ask: *"The ticket doesn't include the calculation rates. Can you save a screenshot of the rate table (an admin DB query filtering on this form's `formid`, showing `formid`, `rate_name`, `beneficiaryid`, `value`, `date_start`, `date_end`) to disk and provide the full file path? Claude will move it into `_ticket\` automatically."*
 
 Do not proceed until you have items 1–6 plus item 7 if rates were missing from the ticket.
+
+---
+
+## Step 1.5 — Hardcoded-Rate Audit (PR, rates only)
+
+Rates must come from the form's rate table so a future rate change needs a data row, not a code change. Hardcoded rates caused BLTE-26624 (a jurisdiction stuck at 1% after its rate became 1.5%).
+
+Skip this step only if no PR exists for the ticket. Otherwise ask for the PR link if you were not given one.
+
+**What you may read:** the PR's changed files, plus the code they call to validate or calculate this form's filing body (read the file at the PR head, not only the added lines — a hardcoded rate in untouched code still counts), and any migration in the PR that adds or changes rate-table rows. Use `gh pr diff` / `gh api` or the link. Read nothing else for test content.
+
+**How to spot a rate:**
+- **A rate is a field multiplied by a number**: `subject * 0.015`, `tax * 0.05 * months`, `$rates['<jurisdiction name>']` where the array holds literals and is later multiplied. Follow constants, class constants, arrays and maps back to where the number is defined.
+- **Not a rate**: a field times a field, or a field plus or minus a field (`total - excluded`, `tax + penalty + interest`, `taxDue / totalTaxDue`). Also ignore unit conversions and bookkeeping literals (`* 100`, rounding precision, month counts, array indexes), and flat tolerances or minimums compared against a value (`abs($a - $b) <= 5.00`) unless the ticket says they come from the rate table.
+- This covers tax, penalty and interest rates alike, per jurisdiction and per county entry.
+
+**A rate passes** when the number reaches the multiplication through a rate-table lookup (a query on the form's rate table, honoring `date_start` / `date_end`). **A rate fails** when it is a literal, a hardcoded constant or map, or a lookup with a hardcoded fallback that silently substitutes a default.
+
+**Report**, and record in `_ticket\REQUIREMENTS.md` under `## Rate Source Audit`:
+
+| File:line | Expression | Field × rate | Source | Verdict |
+|---|---|---|---|---|
+
+- Any failing rate is a **finding for the user**, stated plainly with file and line. Do not fix, suppress or work around it, and do not change the samples to match it.
+- If every rate comes from the rate table, say so in one line.
+- If you could not trace a number to its source, say which one and mark it **unverified**, not passed.
+**Rate table readiness (staging and production).** Whether or not a PR exists, confirm the rates the samples expect are actually in the data:
+
+1. Find the form's `formid`, then read its rows from `{tenant}_data.rate` on **both** `db-prod` and `db-staging` (read-only; never run an INSERT, UPDATE or DELETE yourself). Filter on `formid`.
+2. For every county entry and jurisdiction, and for every period the library uses (including the late, on-time and boundary periods), work out which row applies on each environment: rows with `NULL` dates are always effective, otherwise the period must fall within `date_start` to `date_end`. Penalty and interest rates are included.
+3. If a PR with a migration exists, read the migration (rates only) to see which rows it adds and under what guard. A row that is missing today but added by the migration counts as "will exist after the migration".
+4. Report one line per entity and environment: **present**, **added by the migration**, or **missing**. Also flag rows that look wrong: the same rate under another `formid` (misfiled), duplicates that disagree, expired one-day ranges, or a rate that differs between staging and production.
+5. For anything **missing** (not covered by a migration), write an idempotent insert, `INSERT ... SELECT ... FROM DUAL WHERE NOT EXISTS (...)`, to `_ticket\staging-missing-rates.sql` and give it to the user to run. Name which environment it is for. Do not copy test rows, rows under the wrong `formid`, or rows the PR's migration will add.
+6. Record the result in `REQUIREMENTS.md` under `## Rate Source Audit`. Rates in the samples come from the rate table (prod is the reference), not from the PR or the screenshots when they disagree. Note any disagreement and how it was resolved.
+
+- Add rate-boundary test files for any rate-table row with `date_start` / `date_end` (one period on each side of the boundary, accepted at the right rate and rejected at the wrong one), using test amounts large enough that the tolerance cannot hide a wrong rate.
 
 ---
 
@@ -199,6 +241,9 @@ This file is the single source of truth for both `xml-generate-samples` and `xml
 ## Negative-Field Rules
 Fields that reject negative values (one rejection file per field):
 - {list each field tag and its validation error message from the ticket}
+
+## Rate Source Audit
+{PR link, or "No PR available". Then the Step 1.5 table, or "All rates come from the rate table", or the unverified items.}
 
 ## Screenshots
 
@@ -407,6 +452,7 @@ After writing all files, tell the user:
 2. Total number of files written
 3. A numbered list of all file names
 4. Any judgment calls made (e.g., skipping large-gross variant, non-standard field structure)
+5. The Step 1.5 rate-source audit result: all rates from the rate table, or each hardcoded / unverified rate with file and line
 
 Then immediately invoke the `/xml-validate-samples` skill, passing it:
 - The ticket requirements

@@ -634,7 +634,7 @@ Substitute the following placeholders before submitting:
 ```
 This story coordinates the [FULL DATE] production release across Munirevs' multi-tenant (MRNexus) and single-tenant (ST repo) platforms.
 
-Release process reference: [BLT Release Process (Weekly + Daily)](https://neumo.atlassian.net/wiki/spaces/BBLAT/pages/4026630147/BLT+Release+Process+Weekly+Daily)
+Release process reference: [BLT: Release Cadence and Roles](https://neumo.atlassian.net/wiki/spaces/BBLAT/pages/4026630147/BLT+Release+Cadence+and+Roles)
 
 ### Dependencies
 
@@ -651,7 +651,7 @@ Release PRs:
 ### Acceptance Criteria
 
 1. **Merge.** Given the PRs in Dependencies are ready, when each is merged to `staging`, then no merge conflicts occur and the resulting `staging` build deploys without error.
-2. **Regression validation.** Given staging regression tests are run, then the run completes with either: (a) all tests passing, (b) all failures matching the pre-documented expected-failure list (production Jira step, SUTS migration step), or (c) any other failure documented by the QA Engineer (Allen Manning) as a comment on this story containing failure name, root cause hypothesis, and the literal text `Approved to proceed — Allen Manning` before production deployment begins.
+2. **Regression validation.** Given staging regression tests are run, then the run completes with no failures before production deployment begins. If any test fails, the release is held until the QA Engineer determines whether the test needs updating (for example, changed selectors) or the failure is a real bug to send back to the developer.
 3. **Smoke check.** Given production deployment completes, when smoke checks are run, then each Smoke-Check URL listed in Dependencies returns HTTP 200, the primary navigation renders within 10 seconds, and no new 5xx responses appear in the browser network tab. Pre-existing JS console errors are out of scope.
 4. **Notify requesters.** After production deploy is confirmed, a ✅DONE reaction is added to each original release request post in the Microsoft Teams `Release-Requests-Production` channel (team `BLT-Eng`).
 5. **Time logging.** All time spent on this release is logged to this story or its subtasks with activity descriptions before EOD.

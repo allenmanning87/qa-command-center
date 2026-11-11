@@ -221,6 +221,21 @@ Spot-check 3–4 files for:
 
 ---
 
+### 9 — Rate Source Audit Check
+
+Open `_ticket\REQUIREMENTS.md` and read the `## Rate Source Audit` section.
+
+- Section missing, or it says a PR exists but contains no audit result → **BLOCKER**.
+- Any rate marked as failing (hardcoded) or unverified → report it in the final report as a **finding for the user**, separate from file errors. Do not mark it fixed and do not edit sample files to hide it.
+- If the audit passed and the rate table has any row with `date_start` / `date_end`, confirm the library has boundary files for it: one period on each side of the boundary, one accepted at the right rate and one rejected at the wrong rate. Missing boundary files → **BLOCKER**.
+- Rates used in the files must match the rate table, not the PR. If the rates in `REQUIREMENTS.md` have no documented source (ticket, rate table screenshot, or rate-table query with the form's id), flag as an **ISSUE**.
+- Rate table readiness: the audit must say, for each entity and environment (prod and staging), whether the rate is present, added by the migration, or missing. If the section lacks this, or a rate is missing with no insert query in `_ticket\staging-missing-rates.sql` and no migration covering it → **BLOCKER**.
+- Spot-check it yourself: query the rate table read-only on `db-prod` and `db-staging`, filtered on the form's `formid` (never an unfiltered query, as other forms' rows look like conflicts), and confirm 2–3 recorded rates, including one with `date_start` / `date_end`. A mismatch with what the audit recorded → **BLOCKER**.
+
+If running standalone and a PR link is available but no audit was recorded, run the audit as defined in Step 1.5 of `xml-generate-samples` and record it. Read the PR for rate sources only.
+
+---
+
 ## Reporting
 
 ### If all checks pass:
