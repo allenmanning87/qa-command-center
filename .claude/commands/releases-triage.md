@@ -5,7 +5,6 @@ Before doing anything else, read the `.env` file at the repo root using the `Rea
 - `JIRA_BASE_URL` → strip `https://` to get `{JIRA_DOMAIN}` (e.g. `your-company.atlassian.net`)
 - `GITHUB_ORG`
 - `JIRA_PROJECT`
-- `JIRA_RELEASES_EPIC`
 - `RELEASE_APP_REPO`
 - `SUTS_API_RELEASE_OWNER` — the person who releases `SUTS-API` PRs (see Step 3.4)
 
@@ -23,7 +22,7 @@ You are executing **Phase 1** (Jira-story triage) and **Phase 2** (Jira story ve
 
 > **Phase 4 is live.** It was briefly retired on the assumption that the Phase 5 e2e gate was sufficient, but that gate runs against the release *tag* only *after* `/fast-forward` has already merged staging into `main`. Phase 4 runs the same suite against the `staging` branch first, so a bad build never gets fast-forwarded. The two gates are complementary: **Phase 4 guards `main`, Phase 5 guards production.** Both must pass in their respective phases.
 
-> **Source of truth changed:** release requests are no longer read from the `Release-Requests-Production` Teams channel. They are now the tickets **linked** to that day's release story under `{JIRA_RELEASES_EPIC}`. Because requesters no longer post PRs, triage **discovers each ticket's PR(s) by scanning that ticket's Jira comments**.
+> **Source of truth changed:** release requests are no longer read from the `Release-Requests-Production` Teams channel. They are now the tickets **linked** to that day's release story. Because requesters no longer post PRs, triage **discovers each ticket's PR(s) by scanning that ticket's Jira comments**.
 
 ## Pre-flight — Determine the release blackout window
 
@@ -31,13 +30,13 @@ You are executing **Phase 1** (Jira-story triage) and **Phase 2** (Jira story ve
 
 Compute the window up front, using today's date (the `currentDate` provided in context; confirm with `date +%F` if unsure):
 
-1. **Determine the anchor.** Start from the **20th of the current month**. If the 20th is a Saturday or Sunday, **roll the anchor forward to the next business day** (Mon–Fri). Otherwise the anchor is the 20th. The anchor is always a business day.
-2. Walk **backward 2 business days** (Mon–Fri, skipping Sat/Sun) from the anchor → blackout **start** date.
+1. **Determine the anchor.** Start from the **20th of the current month**. If the 20th is a Saturday or Sunday, **roll the anchor forward to the next business day** (Mon–Fri, skipping company holidays). Otherwise the anchor is the 20th. The anchor is always a business day.
+2. Walk **backward 2 business days** (Mon–Fri, skipping weekends and company holidays) from the anchor → blackout **start** date.
 3. Walk **forward 1 business day** from the anchor → blackout **end** date.
-4. The blackout window is `[start, end]` inclusive. It always contains exactly **4 business days**: the two before the anchor, the anchor, and the one after. *(Worked example A: July 2026 — the 20th is a Monday (business day), so anchor = Mon Jul 20; 2 business days before = Thu Jul 16 and Fri Jul 17, 1 business day after = Tue Jul 21 → blackout business days = **Thu Jul 16, Fri Jul 17, Mon Jul 20, Tue Jul 21**; window `[Jul 16, Jul 21]`.)* *(Worked example B: June 2026 — the 20th is a Saturday, so roll the anchor forward to Mon Jun 22; 2 business days before = Thu Jun 18 and Fri Jun 19, 1 business day after = Tue Jun 23 → blackout business days = **Thu Jun 18, Fri Jun 19, Mon Jun 22, Tue Jun 23**; window `[Jun 18, Jun 23]`.)*
+4. The blackout window is `[start, end]` inclusive. It always contains exactly **4 business days**: the two before the anchor, the anchor, and the one after. *(Worked example A: July 2026 — the 20th is a Monday (business day), so anchor = Mon Jul 20; 2 business days before = Thu Jul 16 and Fri Jul 17, 1 business day after = Tue Jul 21 → blackout business days = **Thu Jul 16, Fri Jul 17, Mon Jul 20, Tue Jul 21**; window `[Jul 16, Jul 21]`.)* *(Worked example B: June 2026 — the 20th is a Saturday, so roll the anchor forward to Mon Jun 22; 2 business days before = Thu Jun 18 and Fri Jun 19, 1 business day after = Tue Jun 23 → blackout business days = **Thu Jun 18, Fri Jun 19, Mon Jun 22, Tue Jun 23**; window `[Jun 18, Jun 23]`.)* *(Worked example C: January 2027 — the 20th is a Wednesday, so anchor = Wed Jan 20; Mon Jan 18 is Martin Luther King Jr. Day and is skipped, so 2 business days before = Fri Jan 15 and Tue Jan 19, 1 business day after = Thu Jan 21 → blackout business days = **Fri Jan 15, Tue Jan 19, Wed Jan 20, Thu Jan 21**; window `[Jan 15, Jan 21]`.)*
 5. Record whether **today** falls inside `[start, end]`. Store as `{IN_BLACKOUT}` (true/false). Always report the computed window in the Step 5 header, regardless of the value.
 
-> Business-day counting excludes weekends only. If company holidays might shift the count, note the uncertainty in the report rather than guessing.
+> **Business days are Monday–Friday excluding company holidays:** New Year's Day, Martin Luther King Jr. Day, Presidents' Day, Memorial Day, Independence Day, Labor Day, Thanksgiving Day and Christmas Day. This is the same definition as the Cadence page (BLT: Release Cadence and Roles). Weekends and company holidays are skipped when rolling the anchor and when walking the window. Also record whether **today** is a company holiday, as `{IS_HOLIDAY}`.
 
 If `{IN_BLACKOUT}` is false, the priority gate in Step 3.8 is a no-op — every priority is eligible. Priority is still fetched and shown in the report for visibility.
 
@@ -66,20 +65,8 @@ Do not proceed until these tools are confirmed available. (`atlassianUserInfo`, 
 
 The release story is the anchor for everything below: its linked tickets are the release requests.
 
-1. **If the user provided a story key** in the invocation (e.g. `BLTE-23558`) → use it directly and skip to Step 2. Report the key so it's on the record.
-2. **Otherwise, discover it by date.** Search under the epic using JQL (substitute `{TODAY}` = the ISO date from `currentDate`, and `{JIRA_RELEASES_EPIC}` from `.env`):
-
-   ```
-   summary ~ "Releases {TODAY}" AND parent = {JIRA_RELEASES_EPIC} AND statusCategory != Done
-   ```
-
-   - **Exactly one match** → use it.
-   - **Zero matches** → fall back to the single newest non-Done release story under the epic:
-     ```
-     parent = {JIRA_RELEASES_EPIC} AND statusCategory != Done ORDER BY created DESC
-     ```
-     Take the newest result and **stop to confirm with the user** ("No story matched `Releases {TODAY}`. Newest open release story is `{KEY} — {summary}`. Use this one?") before proceeding. If the fallback also returns nothing, report that no open release story exists under the epic and stop.
-   - **More than one match** → list all matches (`{KEY} — {summary}`) and ask the user which to use before proceeding.
+1. **If the user provided a story key or link** in the invocation (e.g. `BLTE-23558` or `https://{JIRA_DOMAIN}/browse/BLTE-23558`) → use it and extract the key. Report the key so it's on the record.
+2. **Otherwise, ask the user for the release ticket link** (weekly release ticket on Tuesday, `BLI Release {date}` story on a Thursday) and **stop until they answer**. Do not search for it.
 
 3. Once resolved, report the story up front so the user can confirm the skill picked the right one:
    `Release story: https://{JIRA_BASE_URL}/browse/{STORY-KEY} — {summary}`
@@ -102,6 +89,7 @@ Collect each such `outwardIssue.key` (the child ticket) along with its `fields.s
 - **All linked tickets are in scope regardless of status.** Capture and show each ticket's status in the report, but do **not** exclude a ticket because of its status.
 - **All linked tickets are in scope regardless of issue type.** The link type is the only filter — `issuetype` is not. Bugs, Stories, Tasks and **Epics** all count as release requests when they are linked this way. An Epic linked to the release story is a request like any other: fetch its comments, discover its PR(s), run the gates on it, count it in `[N] linked tickets`, and give it a Dependencies bullet and review tabs. Do **not** treat an Epic as a container to expand, skip as "not a real request", or drop because its children are linked elsewhere — that silently shrinks the release. The same applies to any issue type not named here.
 - **Normalize ticket keys to uppercase.** Tickets may span multiple projects (e.g. `BLI-*` and `BLTE-*`) — handle both.
+- **BLI Thursday release story.** If the story's summary starts with `BLI Release`, it is a Thursday release of ready BLI tickets. That release **never runs during a blackout or on a company holiday**. If `{IN_BLACKOUT}` or `{IS_HOLIDAY}` is true, tell the user plainly — `No BLI Thursday release today ({blackout window / holiday name}). Leave these tickets linked to the weekly release ticket.` — and **stop**. Do not triage the tickets or hold them one by one.
 - **Empty state:** if there are zero qualifying linked tickets, report `No tickets linked to {STORY-KEY} — nothing to triage.` and stop (do not proceed to PR discovery or Phase 2).
 
 Keep the story's field/subtask/description data from this call for Phase 2 — no need to re-fetch it there.
@@ -203,6 +191,8 @@ gh api graphql -f query='{
   repository(owner: "{GITHUB_ORG}", name: "REPO") {
     pullRequest(number: N) {
       state
+      mergedAt
+      mergeCommit { oid }
       isDraft
       mergeable
       mergeStateStatus
@@ -362,6 +352,23 @@ A PR that passes all five gates needs no mention at all; it counts toward the cl
 
 **Important:** PRs failing **any** gate should be omitted from the Jira story's PR list in Step 6, and should NOT be merged in Phase 3, unless the user explicitly overrides. Note them prominently in the Step 5 report so the user can notify the developer.
 
+## Step 3.5c — Check for already-released tickets
+
+A ticket can still be linked to this story after it shipped — most often a BLI ticket released on the Thursday before and never moved off the weekly release ticket. Gates 1–4 are about merging, so they do not apply to a PR whose `state` is `MERGED`; use this check instead. The `state`, `mergedAt` and `mergeCommit` already returned by the Step 3.5b query are enough for most cases.
+
+For every ticket whose discovered PRs are **all** `MERGED`, decide whether the change is actually live:
+
+- **ST repo** → a merged ST PR is on the repo's default branch, which is what gets released → **shipped**.
+- **MT / RUX / SUTS-API** → merged into `staging` is **not** shipped. That is expected for RUX (the team often merges its own PRs ahead of the release) and the PR still rides in this release, so leave it in the Dependencies list and do not flag it. It is shipped only when its merge commit is already on `main`:
+  ```bash
+  gh api repos/{GITHUB_ORG}/{repo}/compare/main...{mergeCommit.oid} --jq '.status'
+  ```
+  `behind` or `identical` → the commit is on `main` → **shipped**. `ahead` or `diverged` → not on `main` yet.
+
+If **every** PR on the ticket is shipped, flag the ticket `⚠ ALREADY RELEASED — all PRs already merged and live`. **Exclude** it from the Dependencies list and from Phase 3 (nothing is left to merge). In Notes, name each PR with its `mergedAt` date and recommend unlinking the ticket from this story. Do **not** unlink it yourself (see "Issue links — no re-linking needed" in Step 6).
+
+If only **some** of a ticket's PRs are shipped, omit just those PRs from the Dependencies list and mention it in a Notes line; do not flag the ticket.
+
 ## Step 3.6 — Check ST repo PRs for migrations
 
 For every discovered PR in a **non-`{RELEASE_APP_REPO}` (ST) repo**, check whether the PR contains migration files. Run all checks in parallel.
@@ -462,6 +469,7 @@ A request gets a full block **only if it needs action**. Flag it if **any** of t
 - `⚠ STACKED PR — base is a feature branch, confirm target with developer` — Gate 5 (Step 3.5b), Shape B: excluded pending the developer's answer, not retargeted
 - `⚠ MT MIGRATION — will be skipped by /releases-merge` — Step 3.6b (a `businesstaskdata` reference, or an index add on `businesstask`/`businesstaskdata`/`transactions`)
 - `⚠ {APP_REPO} STAGING AHEAD OF MAIN` — Step 3.6c (blocks that repo's merges in `/releases-merge` Step 2)
+- `⚠ ALREADY RELEASED` — Step 3.5c: every PR on the ticket is already merged and live; excluded, and the ticket should probably be unlinked from this story
 - `⛔ HELD` by the blackout gate (Step 3.8)
 - `MULTI-PR` — the ticket has more than one PR (e.g. a `RUX` frontend PR plus its `{RELEASE_APP_REPO}` backend counterpart), **and** they do not all clear the gates: flag it when any one of them is gate-excluded while another is clean, so the user knows only part of the fix would ship. A multi-PR ticket whose PRs are all clean needs no block.
 - The ticket's own comments show an **open issue, failing test, unmet reporter feedback, or an irreversible/manual step** that needs a decision before merge (e.g. QA reported a failure after the PR was approved, a reporter said the fix still isn't working, a migration that cannot be rolled back)
@@ -509,6 +517,7 @@ Then add only the lines that apply:
 - `Excluded (unresolved review comments): [ticket] (#PR), …`
 - `Excluded (not approved / merge blocked): [ticket] (#PR), …`
 - `Excluded (CI failed): [ticket] (#PR — {check name}), …`
+- `Excluded (already released): [ticket] (#PR, …) — unlink from the story?`
 - `Partial fix — only one half releasable: [ticket] ([repo]#[PR] excluded, [repo]#[PR] clean)` — for a ticket whose `RUX` / `{RELEASE_APP_REPO}` pair is split by the gates.
 - `Held for release blackout ([window]) — not P0/P1: [ticket] ({priority}), …` — excluded from Step 6's Dependencies list and from Phase 3 merging unless the user explicitly overrides.
 - `No PR found (chase developer): [ticket] — [summary], …`
@@ -524,7 +533,7 @@ In an exceptions-only report the counts are the **only** representation most req
 
 - `[N] linked tickets` **==** the number of qualifying entries collected in Step 2 (count the `outwardIssue` entries in `issuelinks`, don't re-tally from your own report blocks). Count **every** qualifying link, including Epics and any other issue type — the link type is the only filter (Step 2).
 - `[C] clean + [F] need review` **==** `[N]`
-- `[X] releasable PRs` **==** total PRs discovered − gate-excluded (unresolved comments / not approved / CI failed / merge conflicts) − blackout-HELD − no-PR tickets. A `BEHIND` RUX PR is **not** gate-excluded and still counts toward `[X]`.
+- `[X] releasable PRs` **==** total PRs discovered − gate-excluded (unresolved comments / not approved / CI failed / merge conflicts) − blackout-HELD − no-PR tickets − already-released PRs (Step 3.5c). A `BEHIND` RUX PR is **not** gate-excluded and still counts toward `[X]`.
 - `[N] ST + [M] MT + [R] RUX + [S] SUTS-API` **==** `[X]`
 - Tickets and PRs are **not** 1:1 — a ticket can contribute two PRs (RUX + `{RELEASE_APP_REPO}`), so never assume the PR count equals the linked-ticket count. Derive each independently.
 - The Step 6 Dependencies list contains exactly `[X]` bullets
@@ -629,7 +638,7 @@ Substitute the following placeholders before submitting:
 |---|---|
 | `[FULL DATE]` | Formatted release date — e.g. `July 28, 2026` |
 | `[PR LIST]` | The discovered PR list (see structure below) |
-| `[CUTOFF]` | `3:00 pm Mountain Time on [day before release date]` — the **business day** immediately before the release date, written as weekday + full date, e.g. `3:00 pm Mountain Time on Friday August 21, 2026` for a Monday August 24 release. Skip weekends: the day before a Monday release is the preceding Friday, not Sunday. Preserve whatever cutoff the existing story description already states; only compute a new one if none is present. |
+| `[CUTOFF]` | `3:00 pm Mountain Time on [day before release date]` — the day before the release date, written as weekday + full date, e.g. `3:00 pm Mountain Time on Monday November 16, 2026` for a Tuesday November 17 release. Preserve whatever cutoff the existing story description already states; only compute a new one if none is present. |
 
 ```
 This story coordinates the [FULL DATE] production release across Munirevs' multi-tenant (MRNexus) and single-tenant (ST repo) platforms.
@@ -686,7 +695,7 @@ Order by repo class, **not** by ticket. A ticket with PRs in two repos contribut
 
 This ordering ensures `/releases-merge` processes the repos in the intended sequence when reading the list top-to-bottom.
 
-**Exclusions:** Omit from the Dependencies list any PR whose ticket is flagged `⚠ UNRESOLVED COMMENTS` (Step 3.5b), HELD by the blackout gate (Step 3.8), or `NEEDS MANUAL REVIEW` (no PR — Step 3.5). These are excluded from Phase 3 merging too, unless the user explicitly overrides.
+**Exclusions:** Omit from the Dependencies list any PR whose ticket is flagged `⚠ UNRESOLVED COMMENTS` (Step 3.5b), HELD by the blackout gate (Step 3.8), `⚠ ALREADY RELEASED` (Step 3.5c), or `NEEDS MANUAL REVIEW` (no PR — Step 3.5). These are excluded from Phase 3 merging too, unless the user explicitly overrides.
 
 ### Issue links — no re-linking needed
 
@@ -709,7 +718,7 @@ Build the list in two passes:
 1. **Dependencies pass.** Walk the Dependencies PR list top-to-bottom. For each PR:
    - If its owning ticket has **already been emitted**, **skip this PR entirely** — it was already opened as part of that ticket's group. Do not emit a second Jira tab, and do not emit the PR again.
    - Otherwise, emit the group: the ticket's Jira URL, then **all** of that ticket's PRs. Order the ticket's own PRs among themselves by repo class (ST → MT → RUX → SUTS-API), matching Dependencies order. This **pulls a later PR forward** into the group — that is intended, and it is why the skip rule above exists.
-2. **Trailing pass (excluded / no-PR tickets).** After the Dependencies pass, append a group for every linked ticket **not** already emitted — i.e. tickets excluded from the Dependencies list: HELD (blackout, Step 3.8), `⚠ UNRESOLVED COMMENTS` (Step 3.5b), `⚠ MERGE CONFLICTS` / `⚠ STACKED PR` (Step 3.5b), `⚠ CI FAILED` (Step 3.5b), and `NEEDS MANUAL REVIEW` (no PR — Step 3.5). Walk these in Step 5 report (link) order. Emit each ticket's Jira URL followed by its discovered PR(s) if any — excluded tickets still have PRs worth reviewing; `NEEDS MANUAL REVIEW` tickets get the Jira tab only.
+2. **Trailing pass (excluded / no-PR tickets).** After the Dependencies pass, append a group for every linked ticket **not** already emitted — i.e. tickets excluded from the Dependencies list: HELD (blackout, Step 3.8), `⚠ UNRESOLVED COMMENTS` (Step 3.5b), `⚠ MERGE CONFLICTS` / `⚠ STACKED PR` (Step 3.5b), `⚠ CI FAILED` (Step 3.5b), `⚠ ALREADY RELEASED` (Step 3.5c), and `NEEDS MANUAL REVIEW` (no PR — Step 3.5). Walk these in Step 5 report (link) order. Emit each ticket's Jira URL followed by its discovered PR(s) if any — excluded tickets still have PRs worth reviewing; `NEEDS MANUAL REVIEW` tickets get the Jira tab only.
 
 **The grouped shape is the requirement, not an implementation detail.** A ticket with two PRs produces **3 tabs** (ticket, PR, PR) — never 4, and never a bare PR sitting under an unrelated ticket. If a ticket's PRs land in different repo sections of the Dependencies list, the group still stays contiguous at the position of that ticket's *first* PR.
 
