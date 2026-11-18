@@ -5,7 +5,6 @@ Before doing anything else, read the `.env` file at the repo root using the `Rea
 - `JIRA_BASE_URL` → strip `https://` to get `{JIRA_DOMAIN}`
 - `GITHUB_ORG`
 - `JIRA_PROJECT`
-- `JIRA_RELEASES_EPIC`
 - `RELEASE_APP_REPO`
 - `SUTS_API_RELEASE_OWNER` — the person who releases `SUTS-API` PRs (see the repo classes below)
 
@@ -19,13 +18,9 @@ You are executing Phase 3 of the daily release process: merging confirmed PRs an
 
 ## Inputs
 
-Before doing anything else, fetch today's Daily Releases Jira story to get the authoritative PR list. Search for it using JQL:
-```
-summary ~ "Releases {TODAY}" AND "Epic Link" = {JIRA_RELEASES_EPIC} AND statusCategory != Done
-```
-Parse the story's description — the PRs are listed under the `### Dependencies` / `* Release PRs:` section. Extract every `github.com/{GITHUB_ORG}/*/pull/NNN` URL.
+Before doing anything else, get the release story key. If the user (or `/releases-triage`) already gave a key or link (e.g. `BLTE-23558` or `https://{JIRA_DOMAIN}/browse/BLTE-23558`), use it. Otherwise **ask the user for the release ticket link and stop until they answer** — do not search for it.
 
-If no story is found, ask the user for the story key before proceeding.
+Fetch that story to get the authoritative PR list. Parse the story's description — the PRs are listed under the `### Dependencies` / `* Release PRs:` section. Extract every `github.com/{GITHUB_ORG}/*/pull/NNN` URL.
 
 Each PR is classified into one of **four** repo classes:
 - **MT (Multi-Tenant)**: `{GITHUB_ORG}/{RELEASE_APP_REPO}` repo
